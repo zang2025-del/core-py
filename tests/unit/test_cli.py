@@ -199,6 +199,7 @@ class TestParser:
             "grants",
             "revoke",
             "audit",
+            "client",
             "eval",
             "serve",
         }

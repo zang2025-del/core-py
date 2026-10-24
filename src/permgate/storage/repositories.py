@@ -17,8 +17,8 @@ from sqlalchemy import CursorResult, delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from .keys import find_project_root, project_key
-from .models import Decision, Grant, Project
+from .keys import find_project_root, normalise_root, project_key
+from .models import Client, ClientRoot, Decision, Grant, Project, utcnow
 
 
 def digest_arguments(arguments: Mapping[str, Any]) -> str:
@@ -247,12 +247,130 @@ class DecisionRepository:
         self,
         *,
         project_id: int | None = None,
+        project_ids: Sequence[int] | None = None,
         limit: int = 50,
         verdict: str | None = None,
     ) -> Sequence[Decision]:
+        """Recent rows, optionally narrowed to one project or to a set of them.
+
+        ``project_ids`` exists for the caller-scoped audit read. When a caller
+        omits ``project_root`` it must still see only its own workspaces, and
+        the answer to "which ones" is a set rather than a single id. Passing an
+        empty sequence returns nothing rather than everything -- a caller
+        allowed to name no workspace is not the same as a caller allowed to name
+        all of them, and the two are one falsy check apart.
+        """
         statement = select(Decision).order_by(Decision.occurred_at.desc(), Decision.id.desc())
         if project_id is not None:
             statement = statement.where(Decision.project_id == project_id)
+        elif project_ids is not None:
+            if not project_ids:
+                return []
+            statement = statement.where(Decision.project_id.in_(project_ids))
         if verdict is not None:
             statement = statement.where(Decision.verdict == verdict)
         return self._session.scalars(statement.limit(limit)).all()
+
+    def project_root_for(self, decision_id: str) -> str | None:
+        """The workspace a decision belongs to, or ``None`` if there is no such row.
+
+        The answer endpoint takes no ``project_root``: the client is answering a
+        prompt it was shown, and the only safe way to authorise that is to ask
+        which workspace the prompt belongs to rather than to trust a second
+        field the caller supplies. Callers use this to make that check before
+        the answer is written, not after.
+        """
+        return self._session.scalar(
+            select(Project.root)
+            .join(Decision, Decision.project_id == Project.id)
+            .where(Decision.id == decision_id)
+        )
+
+
+class ClientRepository:
+    """Who may call the service, and which workspaces each caller may name.
+
+    Two questions, kept apart on purpose: ``find_active_by_token_hash`` answers
+    "is this caller who it claims to be" and ``roots_for`` answers "may it name
+    that workspace". Collapsing them is how a token that should only read one
+    project becomes one that writes to all of them.
+    """
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def find_active_by_token_hash(self, token_hash: str) -> Client | None:
+        """A live client for this token digest. Revoked rows never match.
+
+        Lookup is on the digest rather than by fetching every client and
+        comparing tokens in constant time: the digest is what the database
+        indexes, and an attacker who cannot invert the hash learns nothing
+        useful from how long a lookup against a B-tree took.
+        """
+        return self._session.scalar(
+            select(Client).where(
+                Client.token_hash == token_hash,
+                Client.revoked_at.is_(None),
+            )
+        )
+
+    def roots_for(self, client_id: int) -> tuple[str, ...]:
+        rows = self._session.scalars(
+            select(ClientRoot.prefix)
+            .where(ClientRoot.client_id == client_id)
+            .order_by(ClientRoot.prefix)
+        ).all()
+        return tuple(rows)
+
+    def find_by_name(self, name: str) -> Client | None:
+        return self._session.scalar(select(Client).where(Client.name == name))
+
+    def upsert(self, *, name: str, token_hash: str, roots: Sequence[str]) -> tuple[Client, bool]:
+        """Create or update a client. Returns ``(client, created)``.
+
+        Used by the startup bootstrap path and by tests. Updating replaces the
+        whole allowlist rather than merging it, because a bootstrap that only
+        ever added roots would make removing one impossible -- and an allowlist
+        you cannot shrink is not an allowlist.
+        """
+        client = self.find_by_name(name)
+        created = client is None
+        normalised = sorted({normalise_root(root) for root in roots})
+
+        if client is None:
+            client = Client(name=name, token_hash=token_hash)
+            self._session.add(client)
+            self._session.flush()
+        else:
+            client.token_hash = token_hash
+            # Re-running bootstrap after a revoke has to bring the client back,
+            # otherwise the only way out of a mistaken revoke is a manual delete.
+            client.revoked_at = None
+            for existing in list(client.roots):
+                self._session.delete(existing)
+            self._session.flush()
+
+        for prefix in normalised:
+            self._session.add(ClientRoot(client_id=client.id, prefix=prefix))
+        self._session.flush()
+        return client, created
+
+    def revoke(self, name: str) -> bool:
+        """Turn a client off, keeping the row. True if this call did it."""
+        client = self.find_by_name(name)
+        if client is None or client.revoked_at is not None:
+            return False
+        client.revoked_at = utcnow()
+        self._session.flush()
+        return True
+
+    def all(self) -> Sequence[Client]:
+        return self._session.scalars(select(Client).order_by(Client.name)).all()
+
+    def count_active(self) -> int:
+        return int(
+            self._session.scalar(
+                select(func.count()).select_from(Client).where(Client.revoked_at.is_(None))
+            )
+            or 0
+        )

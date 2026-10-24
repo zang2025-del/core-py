@@ -19,6 +19,7 @@ from . import __version__
 from .api.deps import Container, build_container, create_schema
 from .api.errors import install_error_handlers
 from .api.routes import ops, router
+from .api.security import configure_clients
 from .config import Settings, get_settings
 from .observability.logging import configure_logging
 from .observability.metrics import MetricsSink
@@ -33,6 +34,13 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         # database, so a first run creates it. A real deployment runs
         # ``alembic upgrade head`` and this is a no-op.
         create_schema(container.engine)
+
+    # After the schema, before the first request is accepted. This raises when
+    # identity is required and no client could ever authenticate, which is the
+    # point: the process must fail to start rather than come up answering every
+    # caller, because the second failure mode is silent and this one is a log
+    # line in the deploy.
+    configure_clients(container.session_factory, container.settings)
     try:
         yield
     finally:

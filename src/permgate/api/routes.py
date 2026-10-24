@@ -13,7 +13,24 @@ row with an id rather than a stateless function call.
     DELETE /v1/grants/{key}                 withdraw one
     DELETE /v1/grants                       withdraw all, for one project
     GET    /v1/audit                        what was decided, and what ran
+    GET    /v1/rules                        the rule tables as data
     GET    /healthz  /readyz  /metrics      operations
+
+**Every endpoint above ``/v1/rules`` is behind authentication**, and the three
+probes below it are not. That split is not a ranking of importance: a probe
+cannot present a credential, and a liveness check that fails when the database
+is unreachable would get a healthy process restarted. ``/metrics`` is the one
+judgement call and it is called out in the deployment notes rather than left
+implicit.
+
+**Authorisation is applied per endpoint rather than by a blanket middleware**,
+because the endpoints do not agree on what they are authorising. Four of them
+take a ``project_root`` the caller names; the answer endpoint takes only a
+``decision_id`` and must resolve the workspace *from the row* rather than trust
+a second field; the audit endpoint may take neither and must then fall back to
+"whatever this caller may name". A middleware can see that a request is
+authenticated and not much else, so the check that matters would still have to
+live here -- and having it in two places is how the weaker one wins.
 """
 
 from __future__ import annotations
@@ -21,7 +38,8 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Query, Request, Response, status
 
 from ..observability.metrics import PrometheusMetrics
-from ..services.errors import ModeNotAllowed
+from ..services.errors import DecisionNotFound, ModeNotAllowed
+from ..storage.repositories import DecisionRepository
 from .deps import Container, get_container
 from .schemas import (
     AnswerRequest,
@@ -38,6 +56,7 @@ from .schemas import (
     ReadinessResponse,
     RevokeResponse,
 )
+from .security import Principal, require_principal
 
 router = APIRouter()
 
@@ -45,8 +64,33 @@ ProjectRootQuery = Query(
     ...,
     min_length=1,
     max_length=1024,
-    description="Path to the workspace. Normalised server-side.",
+    description="Path to the workspace. Normalised server-side, and checked "
+    "against the workspaces the authenticated client may name.",
 )
+
+
+def _root_of_decision(container: Container, decision_id: str, principal: Principal) -> str:
+    """The workspace a decision belongs to, if this caller may act on it.
+
+    The answer endpoint takes no ``project_root``, which is a nicety for the
+    client and a hazard for the service: the interesting question -- "may this
+    caller answer this prompt" -- cannot be asked of a field the caller
+    supplies. So it is asked of the row.
+
+    A decision in someone else's workspace answers ``404``, not ``403``. The id
+    is a UUID the caller had no way to guess, so a distinct status would let
+    them confirm that a guessed id exists -- turning an error code into an
+    existence oracle. Contrast the ``project_root`` endpoints, where the caller
+    already knows the path they typed and ``403`` tells them something useful.
+    """
+    session = container.session_factory()
+    try:
+        root = DecisionRepository(session).project_root_for(decision_id)
+    finally:
+        session.close()
+    if root is None or not principal.may_name(root):
+        raise DecisionNotFound(f"no decision {decision_id}")
+    return root
 
 
 # --------------------------------------------------------------------- policy
@@ -57,13 +101,18 @@ ProjectRootQuery = Query(
     response_model=DecisionResponse,
     summary="Evaluate one tool call",
     responses={
-        403: {"description": "The requested run mode is not served by this deployment"},
+        401: {"description": "Missing or unrecognised bearer token"},
+        403: {
+            "description": "The run mode is not served here, or the workspace is "
+            "not one this client may name"
+        },
         422: {"description": "Malformed request"},
     },
 )
 def create_decision(
     payload: DecisionRequest,
     request: Request,
+    principal: Principal = Depends(require_principal),
     container: Container = Depends(get_container),
 ) -> DecisionResponse:
     """Decide whether a tool call may proceed.
@@ -82,12 +131,22 @@ def create_decision(
             details={"mode": payload.mode.value},
         )
 
+    # Authorise before evaluating, and pass on the value this returned rather
+    # than ``payload.project_root``. The workspace a decision is recorded against
+    # has to be the one that was checked, or the check has authorised a string
+    # nothing goes on to use.
+    project_root = principal.authorise_root(payload.project_root)
+
     result = container.decisions.evaluate(
-        project_root=payload.project_root,
+        project_root=project_root,
         tool=payload.tool,
         arguments=payload.arguments,
         mode=payload.mode,
-        actor=payload.actor,
+        # The authenticated identity, never ``payload.actor``. The field is still
+        # accepted so existing clients do not break on a 422, but it no longer
+        # decides anything: an audit trail that records the caller's own claim
+        # about who it is answers no question anyone auditing would ask.
+        actor=principal.name,
         request_id=getattr(request.state, "request_id", None),
     )
     return DecisionResponse(
@@ -106,7 +165,8 @@ def create_decision(
     response_model=AnswerResponse,
     summary="Record what the human decided",
     responses={
-        404: {"description": "No such decision"},
+        401: {"description": "Missing or unrecognised bearer token"},
+        404: {"description": "No such decision, or not in a workspace this client may name"},
         409: {"description": "Already answered"},
         422: {"description": "Unknown answer"},
     },
@@ -114,6 +174,7 @@ def create_decision(
 def answer_decision(
     decision_id: str,
     payload: AnswerRequest,
+    principal: Principal = Depends(require_principal),
     container: Container = Depends(get_container),
 ) -> AnswerResponse:
     """Attach the human's answer to the prompt this decision raised.
@@ -123,8 +184,9 @@ def answer_decision(
     command says nothing about the next one. The only answer that covers a
     flagged call is ``scoped``, which names the command family explicitly.
     """
+    _root_of_decision(container, decision_id, principal)
     result = container.decisions.answer(
-        decision_id=decision_id, answer=payload.answer, actor=payload.actor
+        decision_id=decision_id, answer=payload.answer, actor=principal.name
     )
     return AnswerResponse(
         decision_id=result.decision_id,
@@ -140,9 +202,10 @@ def answer_decision(
 @router.get("/v1/grants", response_model=GrantListResponse, summary="List standing grants")
 def list_grants(
     project_root: str = ProjectRootQuery,
+    principal: Principal = Depends(require_principal),
     container: Container = Depends(get_container),
 ) -> GrantListResponse:
-    listing = container.grants.list_for_project(project_root)
+    listing = container.grants.list_for_project(principal.authorise_root(project_root))
     return GrantListResponse(
         project_root=listing.project_root,
         grants=[
@@ -168,6 +231,7 @@ def list_grants(
 )
 def create_grant(
     payload: CreateGrantRequest,
+    principal: Principal = Depends(require_principal),
     container: Container = Depends(get_container),
 ) -> GrantResponse:
     """Write a standing grant without going through a prompt.
@@ -179,10 +243,10 @@ def create_grant(
     says which one you got, because the key alone does not.
     """
     result = container.grants.create(
-        project_root=payload.project_root,
+        project_root=principal.authorise_root(payload.project_root),
         tool=payload.tool,
         scope=payload.scope,
-        actor=payload.actor,
+        actor=principal.name,
         note=payload.note,
     )
     grant = result.grant
@@ -203,18 +267,20 @@ def create_grant(
 def revoke_grant(
     key: str,
     project_root: str = ProjectRootQuery,
+    principal: Principal = Depends(require_principal),
     container: Container = Depends(get_container),
 ) -> RevokeResponse:
-    result = container.grants.revoke(project_root=project_root, key=key)
+    result = container.grants.revoke(project_root=principal.authorise_root(project_root), key=key)
     return RevokeResponse(project_root=result.project_root, key=result.key, removed=result.removed)
 
 
 @router.delete("/v1/grants", response_model=RevokeResponse, summary="Withdraw every grant")
 def clear_grants(
     project_root: str = ProjectRootQuery,
+    principal: Principal = Depends(require_principal),
     container: Container = Depends(get_container),
 ) -> RevokeResponse:
-    result = container.grants.clear(project_root=project_root)
+    result = container.grants.clear(project_root=principal.authorise_root(project_root))
     return RevokeResponse(project_root=result.project_root, key=result.key, removed=result.removed)
 
 
@@ -226,9 +292,30 @@ def list_audit(
     project_root: str | None = Query(default=None, max_length=1024),
     limit: int = Query(default=50, ge=1, le=500),
     verdict: str | None = Query(default=None, pattern="^(allow|ask|deny)$"),
+    principal: Principal = Depends(require_principal),
     container: Container = Depends(get_container),
 ) -> AuditListResponse:
-    entries = container.audit.recent(project_root=project_root, limit=limit, verdict=verdict)
+    """Decisions from the workspaces this client may name.
+
+    Omitting ``project_root`` **narrows to the caller's own workspaces**, it does
+    not widen to everyone's. That asymmetry is the reason this endpoint cannot
+    simply pass ``None`` through: the unparameterised read is the one an
+    attacker would make, so it has to be the more restricted one, and a default
+    that means "all of them" would undo the per-client allowlist everywhere else
+    in one request.
+    """
+    if project_root is not None:
+        entries = container.audit.recent(
+            project_root=principal.authorise_root(project_root), limit=limit, verdict=verdict
+        )
+    elif principal.unrestricted:
+        entries = container.audit.recent(limit=limit, verdict=verdict)
+    else:
+        # ``roots`` empty means "may name nothing", which the service answers
+        # with no rows rather than all of them.
+        entries = container.audit.recent(
+            visible_prefixes=principal.roots, limit=limit, verdict=verdict
+        )
     return AuditListResponse(
         entries=[
             AuditEntry(

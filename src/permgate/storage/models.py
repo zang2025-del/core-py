@@ -1,6 +1,16 @@
 """SQLAlchemy models.
 
-Three tables, and the shape of each one is a decision worth stating.
+Five tables, and the shape of each one is a decision worth stating.
+
+``clients``
+    Who is allowed to call the service, and ``client_roots`` -- which project
+    roots each one may name. Without these two, the service answers "may this
+    command run?" without ever asking who is asking, and ``project_root`` is
+    whatever string the caller felt like sending: a client could name a
+    colleague's workspace and inherit their grants. The gateway's whole subject
+    is who may vouch for what, so it cannot leave its own caller unidentified.
+    The token is stored as a digest, never as the secret itself, for the same
+    reason a password is.
 
 ``projects``
     Grants are scoped to a project, so a project has to be a row rather than a
@@ -46,6 +56,83 @@ def utcnow() -> datetime:
 
 class Base(DeclarativeBase):
     pass
+
+
+class Client(Base):
+    """One caller allowed to use the gateway.
+
+    ``token_hash`` is a SHA-256 of the bearer token, never the token itself. A
+    database is copied to a backup, read by an operator, and restored into a
+    staging environment; a table of live credentials turns every one of those
+    into a leak, and a digest cannot be replayed.
+
+    ``revoked_at`` is a timestamp rather than a row deletion. Deleting the row
+    would erase the fact that the token ever existed -- and an audit trail with
+    a hole where a client used to be is worse than one that says "revoked on
+    the 3rd".
+    """
+
+    __tablename__ = "clients"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+        unique=True,
+        index=True,
+        doc="Stable human label. This is what lands in ``decisions.actor``.",
+    )
+    token_hash: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+        unique=True,
+        index=True,
+        doc="SHA-256 hex digest of the bearer token.",
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    roots: Mapped[list[ClientRoot]] = relationship(
+        back_populates="client", cascade="all, delete-orphan"
+    )
+
+    @property
+    def active(self) -> bool:
+        return self.revoked_at is None
+
+
+class ClientRoot(Base):
+    """One project root a client is allowed to name.
+
+    A client with no rows here may name nothing: the allowlist is the grant, not
+    the absence of a rule. That keeps "this token is valid" and "this token may
+    touch your workspace" two separate questions, which they are -- the first
+    is authentication and the second is authorisation, and collapsing them is
+    how a leaked read-only token becomes a write.
+    """
+
+    __tablename__ = "client_roots"
+    __table_args__ = (
+        # Same reasoning as ``grants``: the constraint, not the application,
+        # decides what a duplicate is.
+        UniqueConstraint("client_id", "prefix", name="uq_client_root_prefix"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    client_id: Mapped[int] = mapped_column(
+        ForeignKey("clients.id", ondelete="CASCADE"), nullable=False
+    )
+    prefix: Mapped[str] = mapped_column(
+        String(1024),
+        nullable=False,
+        doc="A normalised project root. Matching is component-wise, not a "
+        "string prefix: see ``api/security.py`` for why /srv/app-2 must not "
+        "match an allowlist entry of /srv/app.",
+    )
+
+    client: Mapped[Client] = relationship(back_populates="roots")
 
 
 class Project(Base):

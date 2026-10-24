@@ -72,6 +72,7 @@ def install_error_handlers(app: FastAPI) -> None:
                 details=exc.details,
                 request_id=_request_id(request),
             ),
+            headers=exc.headers,
         )
 
     @app.exception_handler(RequestValidationError)

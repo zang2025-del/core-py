@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from ..config import Settings
 from ..observability.metrics import MetricsSink, NullMetrics
 from ..storage.cache import GrantCache, NullGrantCache
-from ..storage.keys import find_project_root
+from ..storage.keys import find_project_root, is_within
 from ..storage.repositories import DecisionRepository, GrantRepository, ProjectRepository
 from .errors import ProjectNotFound
 
@@ -248,20 +248,49 @@ class AuditService:
         self,
         *,
         project_root: str | None = None,
+        visible_prefixes: tuple[str, ...] | None = None,
         limit: int = 50,
         verdict: str | None = None,
     ) -> Sequence[AuditView]:
+        """Decisions, narrowed to what the caller is allowed to read.
+
+        ``project_root`` is a single workspace the caller asked for; the router
+        has already checked it is one they may name. ``visible_prefixes`` is the
+        allowlist to apply when they did not ask -- and it is **not** optional
+        cosmetics: without it, a request that simply omits ``project_root``
+        would return every tenant's audit trail, which is a worse bug than the
+        unauthenticated one it sits behind.
+
+        Filtering happens here rather than in SQL because the rule is
+        component-wise path containment, which is exactly the thing a ``LIKE``
+        gets subtly wrong (``/srv/app`` matching ``/srv/app-2``). The cost is
+        reading the project table and comparing in Python; workspaces number in
+        the tens while decisions number in the millions, so it is the right side
+        of that trade.
+        """
         session = self._session_factory()
         try:
-            project_id = None
+            projects = ProjectRepository(session)
+            project_id: int | None = None
+            project_ids: Sequence[int] | None = None
+
             if project_root is not None:
-                project = ProjectRepository(session).get_by_root(project_root)
+                project = projects.get_by_root(project_root)
                 if project is None:
                     return []
                 project_id = project.id
+            elif visible_prefixes is not None:
+                project_ids = [
+                    candidate.id
+                    for candidate in projects.all()
+                    if any(is_within(candidate.root, prefix) for prefix in visible_prefixes)
+                ]
 
             rows = DecisionRepository(session).recent(
-                project_id=project_id, limit=limit, verdict=verdict
+                project_id=project_id,
+                project_ids=project_ids,
+                limit=limit,
+                verdict=verdict,
             )
             return [
                 AuditView(

@@ -171,16 +171,16 @@ class TestAuditApi:
         """The privacy tradeoff, made explicit: an operator can turn raw argument
         storage off, and a row still proves *which* call it was."""
         from fastapi.testclient import TestClient
+        from tests.conftest import authorised, build_settings
 
-        from permgate.config import Settings
         from permgate.main import create_app
 
-        settings = Settings(
-            _env_file=None,
+        settings = build_settings(
+            tmp_path,
             database_url=f"sqlite+pysqlite:///{(tmp_path / 'noargs.db').as_posix()}",
             audit_store_arguments=False,
         )
-        with TestClient(create_app(settings, metrics=metrics)) as client:
+        with authorised(TestClient(create_app(settings, metrics=metrics))) as client:
             client.post(
                 "/v1/decisions",
                 json={
@@ -233,16 +233,16 @@ class TestOperations:
         asserting nothing about the exporter.
         """
         from fastapi.testclient import TestClient
+        from tests.conftest import authorised, build_settings
 
-        from permgate.config import Settings
         from permgate.main import create_app
         from permgate.observability.metrics import PrometheusMetrics
 
-        settings = Settings(
-            _env_file=None,
+        settings = build_settings(
+            tmp_path,
             database_url=f"sqlite+pysqlite:///{(tmp_path / 'm.db').as_posix()}",
         )
-        with TestClient(create_app(settings, metrics=PrometheusMetrics())) as client:
+        with authorised(TestClient(create_app(settings, metrics=PrometheusMetrics()))) as client:
             client.post(
                 "/v1/decisions",
                 json={

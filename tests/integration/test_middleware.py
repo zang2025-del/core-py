@@ -9,6 +9,7 @@ does not error, it just costs memory.
 from __future__ import annotations
 
 from fastapi.testclient import TestClient
+from tests.conftest import authorised, build_settings
 
 from permgate.api.deps import build_container, create_schema
 from permgate.config import Settings
@@ -37,14 +38,17 @@ def _exact_body(tmp_path, size: int) -> bytes:
 
 
 def _client(tmp_path, **overrides) -> TestClient:
-    settings = Settings(
-        _env_file=None,
-        database_url=f"sqlite+pysqlite:///{(tmp_path / 'mw.db').as_posix()}",
-        log_level="WARNING",
-        log_json=False,
-        **overrides,
+    """An app that will start and whose requests are authenticated.
+
+    Both halves come from :func:`tests.conftest.build_settings`: identity is on,
+    and a bootstrap client exists so the lifespan gets past the fail-closed
+    check. Sidestepping that check here would mean these tests measured a
+    service configuration that cannot be deployed.
+    """
+    settings = build_settings(
+        tmp_path, database_url=f"sqlite+pysqlite:///{(tmp_path / 'mw.db').as_posix()}", **overrides
     )
-    return TestClient(create_app(settings, metrics=RecordingMetrics()))
+    return authorised(TestClient(create_app(settings, metrics=RecordingMetrics())))
 
 
 class TestBodySizeLimit:
@@ -136,12 +140,7 @@ class TestContainerLifecycle:
         """A service that builds its own engine per request gets a connection
         pool per request, and the failure that produces under load looks like a
         database problem and is not one."""
-        settings = Settings(
-            _env_file=None,
-            database_url=f"sqlite+pysqlite:///{(tmp_path / 'life.db').as_posix()}",
-            log_level="WARNING",
-        )
-        app = create_app(settings, metrics=RecordingMetrics())
+        app = create_app(build_settings(tmp_path), metrics=RecordingMetrics())
         with TestClient(app):
             first = id(app.state.container)
             second = id(app.state.container)
@@ -151,12 +150,7 @@ class TestContainerLifecycle:
         """`dispose()` does not make an engine unusable -- SQLAlchemy will open
         a fresh connection on the next query -- so "a query still works" proves
         nothing. The call itself is what has to be observed."""
-        settings = Settings(
-            _env_file=None,
-            database_url=f"sqlite+pysqlite:///{(tmp_path / 'dispose.db').as_posix()}",
-            log_level="WARNING",
-        )
-        app = create_app(settings, metrics=RecordingMetrics())
+        app = create_app(build_settings(tmp_path), metrics=RecordingMetrics())
 
         engine = app.state.container.engine
         disposed: list[bool] = []

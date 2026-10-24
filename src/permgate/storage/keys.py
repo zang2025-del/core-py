@@ -20,8 +20,9 @@ in a scratch repository used to approve it in every repository on the machine.
 from __future__ import annotations
 
 import hashlib
+import os
 import re
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 #: Markers that identify a project root.
 PROJECT_MARKERS: tuple[str, ...] = (
@@ -72,3 +73,45 @@ def project_key(root: str | Path) -> str:
     name = Path(normalised).name
     slug = _UNSAFE_IN_SLUG.sub("-", name).strip("-") or "project"
     return f"{slug}-{digest}"
+
+
+def _same_component(left: str, right: str) -> bool:
+    """Compare one path component, on the platform's own terms.
+
+    ``os.path.normcase`` lower-cases on Windows and does nothing on POSIX, which
+    is exactly right: ``C:/Users/me`` and ``c:/users/me`` are one directory on
+    Windows and two on Linux. Comparing raw strings would let a Windows client
+    through or lock it out depending on which case it happened to type. Applied
+    per component because ``normcase`` also rewrites separators, and the
+    splitting has already happened by the time it is called.
+    """
+    return os.path.normcase(left) == os.path.normcase(right)
+
+
+def is_within(root: str | Path, prefix: str | Path) -> bool:
+    """True if ``root`` is ``prefix`` or lives underneath it.
+
+    **Component-wise, not a string prefix**, and that distinction is the whole
+    reason this function exists. ``"/srv/app-2".startswith("/srv/app")`` is true,
+    so a string comparison would let a caller allowed to name ``/srv/app`` --
+    say, a contractor scoped to one repository -- name the directory next door
+    and inherit whatever standing authority is there. Path containment is a
+    question about directory components, so it is answered by comparing
+    components.
+
+    It lives here, beside :func:`normalise_root`, rather than in the API layer
+    that first needed it: ``services/`` uses the same rule to decide which
+    audit rows a caller may read, and a second copy of "is this the same
+    workspace?" is exactly the kind of thing that drifts.
+    """
+    root_parts = PurePosixPath(normalise_root(root)).parts
+    prefix_parts = PurePosixPath(normalise_root(prefix)).parts
+    if len(root_parts) < len(prefix_parts):
+        return False
+    # The length check above makes the slice exactly as long as ``prefix_parts``;
+    # ``strict=True`` asserts that instead of assuming it, so a future edit that
+    # drops the check fails here rather than silently comparing fewer components.
+    return all(
+        _same_component(a, b)
+        for a, b in zip(root_parts[: len(prefix_parts)], prefix_parts, strict=True)
+    )

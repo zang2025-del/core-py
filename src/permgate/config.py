@@ -76,6 +76,42 @@ class Settings(BaseSettings):
         ),
     )
 
+    # ---- authentication --------------------------------------------------
+    #
+    # Identity is on by default, and that is the whole point of the section.
+    # With it off, ``POST /v1/grants`` writes a standing pre-approval for anyone
+    # who can reach the port, and ``project_root`` is whatever string the caller
+    # sent -- so naming a colleague's workspace is enough to inherit their
+    # grants. A service whose subject is "who may vouch for what" cannot leave
+    # its own caller unidentified, and a security control that ships switched
+    # off is a security control nobody turns on.
+    auth_required: bool = Field(
+        default=True,
+        description=(
+            "Identify every caller. Turning this off is a deliberate act: the "
+            "service refuses to start when it is on and no client exists, "
+            "rather than coming up open."
+        ),
+    )
+    auth_bootstrap_token: str | None = Field(
+        default=None,
+        description=(
+            "Create or refresh a client named 'bootstrap' from this token at "
+            "startup, allowed to name the roots in auth_bootstrap_roots. Exists "
+            "so a first deployment has a way in without a chicken-and-egg "
+            "problem; leave it unset once real clients exist, and treat the "
+            "value as a secret."
+        ),
+    )
+    auth_bootstrap_roots: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Project roots the bootstrap client may name. Empty means it may "
+            "name nothing, which is the safe default for a setting that is "
+            "usually a mistake to populate widely."
+        ),
+    )
+
     # ---- audit -----------------------------------------------------------
     audit_enabled: bool = True
     audit_store_arguments: bool = Field(
@@ -110,6 +146,17 @@ class Settings(BaseSettings):
     @field_validator("preapproved_scopes")
     @classmethod
     def _strip_scopes(cls, value: list[str]) -> list[str]:
+        return [scope.strip() for scope in value if scope.strip()]
+
+    @field_validator("auth_bootstrap_roots")
+    @classmethod
+    def _strip_bootstrap_roots(cls, value: list[str]) -> list[str]:
+        # Only whitespace is removed here. Normalisation (resolve, forward
+        # slashes) happens in ``api/security.py``, on both sides of every
+        # comparison, so there is exactly one place that decides what "the same
+        # workspace" means -- storing ``./proj`` here and comparing it against a
+        # resolved ``/abs/proj`` at request time is how an allowlist silently
+        # matches nothing.
         return [scope.strip() for scope in value if scope.strip()]
 
     @property

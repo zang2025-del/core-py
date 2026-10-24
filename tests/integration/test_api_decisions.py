@@ -98,17 +98,17 @@ class TestModePolicy:
 
     def test_bypass_is_refused_even_when_modes_are_allowed(self, tmp_path, metrics):
         from fastapi.testclient import TestClient
+        from tests.conftest import authorised, build_settings
 
-        from permgate.config import Settings
         from permgate.main import create_app
 
-        settings = Settings(
-            _env_file=None,
+        settings = build_settings(
+            tmp_path,
             database_url=f"sqlite+pysqlite:///{(tmp_path / 'b.db').as_posix()}",
             allow_client_supplied_mode=True,
             allow_bypass_mode=False,  # the point of the test
         )
-        with TestClient(create_app(settings, metrics=metrics)) as client:
+        with authorised(TestClient(create_app(settings, metrics=metrics))) as client:
             response = client.post(
                 "/v1/decisions",
                 json={
