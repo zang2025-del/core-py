@@ -162,6 +162,7 @@ class AuditEntry(BaseModel):
 
 class AuditListResponse(BaseModel):
     entries: list[AuditEntry]
+    next_cursor: str | None = None
 
 
 class HealthResponse(BaseModel):

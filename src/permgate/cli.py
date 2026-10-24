@@ -176,14 +176,19 @@ def cmd_audit(args: argparse.Namespace) -> int:
     try:
         if settings.schema_on_startup:
             create_schema(container.engine)
-        entries = container.audit.recent(
+        page = container.audit.recent(
             project_root=args.project, limit=args.limit, verdict=args.verdict
         )
     finally:
         container.close()
 
+    entries = page.entries
     if args.json:
         _print_json([asdict(entry) for entry in entries])
+        if page.next_cursor:
+            # Printed to stderr so `--json` keeps producing one parseable
+            # document on stdout while a human still learns there is more.
+            print(f"next cursor: {page.next_cursor}", file=sys.stderr)
         return 0
     for entry in entries:
         stamp = entry.occurred_at.isoformat(timespec="seconds")

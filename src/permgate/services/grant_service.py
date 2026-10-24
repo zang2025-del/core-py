@@ -20,8 +20,15 @@ from ..config import Settings
 from ..observability.metrics import MetricsSink, NullMetrics
 from ..storage.cache import GrantCache, NullGrantCache
 from ..storage.keys import find_project_root, is_within
-from ..storage.repositories import DecisionRepository, GrantRepository, ProjectRepository
-from .errors import ProjectNotFound
+from ..storage.models import as_utc
+from ..storage.repositories import (
+    DecisionRepository,
+    GrantRepository,
+    ProjectRepository,
+    decode_cursor,
+    encode_cursor,
+)
+from .errors import InvalidCursor, ProjectNotFound
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,6 +106,21 @@ class AuditView:
     arguments: dict[str, Any] | None
     arguments_redacted: bool
     arguments_digest: str
+
+
+@dataclass(frozen=True, slots=True)
+class AuditPage:
+    """One page of the audit trail, plus where the next one starts.
+
+    ``next_cursor`` is ``None`` on the last page and on an empty result. It is a
+    page rather than a bare sequence because the two facts belong together: a
+    caller that got entries and no cursor has reached the end, and a caller
+    holding a cursor must not have to reconstruct "was there more?" from the
+    page size -- a full page is not the same as a last page.
+    """
+
+    entries: Sequence[AuditView]
+    next_cursor: str | None = None
 
 
 class GrantService:
@@ -252,7 +274,8 @@ class AuditService:
         visible_prefixes: tuple[str, ...] | None = None,
         limit: int = 50,
         verdict: str | None = None,
-    ) -> Sequence[AuditView]:
+        cursor: str | None = None,
+    ) -> AuditPage:
         """Decisions, narrowed to what the caller is allowed to read.
 
         ``project_root`` is a single workspace the caller asked for; the router
@@ -268,9 +291,34 @@ class AuditService:
         reading the project table and comparing in Python; workspaces number in
         the tens while decisions number in the millions, so it is the right side
         of that trade.
+
+        Paging is by keyset (see ``DecisionRepository.recent``), and the
+        ``next_cursor`` is only handed out when there is provably another page:
+        one extra row is fetched and thrown away, so the client is never sent a
+        cursor that leads to an empty page. A trail that says "more" and then
+        shows nothing is a trail a reader stops trusting at the worst moment.
         """
         session = self._session_factory()
         try:
+            # The cursor is read before anything else, and deliberately before
+            # the workspace is resolved. A malformed cursor is malformed
+            # regardless of what is in the database, and resolving the workspace
+            # first made the answer depend on stored state: an unknown root
+            # returned an empty page before the cursor was ever looked at, so
+            # the same bad request was a 422 or a 200 depending on whether any
+            # decision had been recorded yet. "Your cursor is broken" is a fact
+            # about the request; it should not be conditional on the data.
+            position: tuple[datetime, str] | None = None
+            if cursor is not None:
+                try:
+                    position = decode_cursor(cursor)
+                except ValueError as exc:
+                    raise InvalidCursor(
+                        "the cursor could not be read; pass back the value the "
+                        "previous page returned, or omit it to start over",
+                        details={"reason": str(exc)},
+                    ) from exc
+
             projects = ProjectRepository(session)
             project_id: int | None = None
             project_ids: Sequence[int] | None = None
@@ -278,7 +326,7 @@ class AuditService:
             if project_root is not None:
                 project = projects.get_by_root(project_root)
                 if project is None:
-                    return []
+                    return AuditPage(entries=[])
                 project_id = project.id
             elif visible_prefixes is not None:
                 project_ids = [
@@ -290,29 +338,46 @@ class AuditService:
             rows = DecisionRepository(session).recent(
                 project_id=project_id,
                 project_ids=project_ids,
-                limit=limit,
+                # One extra row answers "is there another page?" without a
+                # second query and without guessing from the page being full --
+                # a full page is not the same as a last page.
+                limit=limit + 1,
                 verdict=verdict,
+                cursor=position,
             )
-            return [
-                AuditView(
-                    decision_id=row.id,
-                    occurred_at=row.occurred_at,
-                    tool=row.tool,
-                    verdict=row.verdict,
-                    rule=row.rule,
-                    reason=row.reason,
-                    scope=row.scope,
-                    run_mode=row.run_mode,
-                    latency_us=row.latency_us,
-                    actor=row.actor,
-                    answer=row.answer,
-                    granted_key=row.granted_key,
-                    arguments=_load_json(row.arguments),
-                    arguments_redacted=row.arguments_redacted,
-                    arguments_digest=row.arguments_digest,
-                )
-                for row in rows
-            ]
+            has_more = len(rows) > limit
+            kept = rows[:limit]
+            next_cursor = (
+                # ``as_utc`` rather than the raw column: SQLite hands back a
+                # naive datetime, so a cursor built from it cannot be read back
+                # on the next request -- the server would reject its own cursor.
+                encode_cursor(as_utc(kept[-1].occurred_at), kept[-1].id)
+                if has_more and kept
+                else None
+            )
+            return AuditPage(
+                entries=[
+                    AuditView(
+                        decision_id=row.id,
+                        occurred_at=as_utc(row.occurred_at),
+                        tool=row.tool,
+                        verdict=row.verdict,
+                        rule=row.rule,
+                        reason=row.reason,
+                        scope=row.scope,
+                        run_mode=row.run_mode,
+                        latency_us=row.latency_us,
+                        actor=row.actor,
+                        answer=row.answer,
+                        granted_key=row.granted_key,
+                        arguments=_load_json(row.arguments),
+                        arguments_redacted=row.arguments_redacted,
+                        arguments_digest=row.arguments_digest,
+                    )
+                    for row in kept
+                ],
+                next_cursor=next_cursor,
+            )
         finally:
             session.close()
 

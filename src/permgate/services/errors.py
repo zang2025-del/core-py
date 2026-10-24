@@ -65,6 +65,19 @@ class InvalidAnswer(ServiceError):
     code = "invalid_answer"
 
 
+class InvalidCursor(ServiceError):
+    """A paging cursor that could not be read.
+
+    A cursor is opaque to the client and it should not be building one, but a
+    truncated, hand-edited or stale-encoding value has to be a 422 rather than a
+    500. Letting it reach the query would move the distinction into the logs --
+    the one place a client cannot look.
+    """
+
+    status_code = 422
+    code = "invalid_cursor"
+
+
 class AuthenticationRequired(ServiceError):
     """No usable credential: the caller is not identified.
 

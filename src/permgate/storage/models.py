@@ -60,6 +60,30 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def as_utc(value: datetime) -> datetime:
+    """Interpret a stored timestamp as UTC.
+
+    Every timestamp this service writes is UTC, but the two backends disagree
+    about whether they *say* so. PostgreSQL has a real ``timestamptz`` and hands
+    back an aware value; SQLite has no timestamp type and its driver hands back
+    a naive one. That difference is invisible until something compares or
+    serialises the value -- and then it is not invisible at all: comparing naive
+    against aware raises, and serialising a naive value puts a timestamp on the
+    wire that a reader takes as local time.
+
+    Both of those happened here. A paging cursor built from a naive value could
+    not be read back (``decode_cursor`` refuses to guess an offset, because
+    guessing wrong shifts which rows a page returns rather than failing), and
+    the same value reached clients without a timezone on SQLite while carrying
+    one on PostgreSQL. Normalising on the way out fixes both at the one place
+    the value enters the service, instead of at each comparison and each
+    serialisation.
+    """
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
 class Base(DeclarativeBase):
     pass
 

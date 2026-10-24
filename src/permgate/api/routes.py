@@ -289,9 +289,11 @@ def clear_grants(
 
 @router.get("/v1/audit", response_model=AuditListResponse, summary="Recent decisions")
 def list_audit(
+    *,
     project_root: str | None = Query(default=None, max_length=1024),
     limit: int = Query(default=50, ge=1, le=500),
     verdict: str | None = Query(default=None, pattern="^(allow|ask|deny)$"),
+    cursor: str | None = Query(default=None, max_length=512),
     principal: Principal = Depends(require_principal),
     container: Container = Depends(get_container),
 ) -> AuditListResponse:
@@ -303,18 +305,27 @@ def list_audit(
     attacker would make, so it has to be the more restricted one, and a default
     that means "all of them" would undo the per-client allowlist everywhere else
     in one request.
+
+    ``cursor`` pages through the trail: pass back the ``next_cursor`` of the
+    previous response, and ``None`` means the end. It is not an offset because
+    an offset read re-counts every skipped row and shifts under concurrent
+    writes -- both of which an audit read has to survive, since its value is
+    completeness.
     """
     if project_root is not None:
-        entries = container.audit.recent(
-            project_root=principal.authorise_root(project_root), limit=limit, verdict=verdict
+        page = container.audit.recent(
+            project_root=principal.authorise_root(project_root),
+            limit=limit,
+            verdict=verdict,
+            cursor=cursor,
         )
     elif principal.unrestricted:
-        entries = container.audit.recent(limit=limit, verdict=verdict)
+        page = container.audit.recent(limit=limit, verdict=verdict, cursor=cursor)
     else:
         # ``roots`` empty means "may name nothing", which the service answers
         # with no rows rather than all of them.
-        entries = container.audit.recent(
-            visible_prefixes=principal.roots, limit=limit, verdict=verdict
+        page = container.audit.recent(
+            visible_prefixes=principal.roots, limit=limit, verdict=verdict, cursor=cursor
         )
     return AuditListResponse(
         entries=[
@@ -335,8 +346,9 @@ def list_audit(
                 arguments_redacted=entry.arguments_redacted,
                 arguments_digest=entry.arguments_digest,
             )
-            for entry in entries
-        ]
+            for entry in page.entries
+        ],
+        next_cursor=page.next_cursor,
     )
 
 

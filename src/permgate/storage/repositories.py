@@ -7,19 +7,67 @@ lets ``services/`` be tested against an in-memory seam, and it is what makes
 
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import json
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from typing import Any, cast
 
-from sqlalchemy import CursorResult, delete, func, select, update
+from sqlalchemy import CursorResult, and_, delete, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .keys import find_project_root, normalise_root, project_key
-from .models import Client, ClientRoot, Decision, Grant, Project, utcnow
+from .models import Client, ClientRoot, Decision, Grant, Project, as_utc, utcnow
 from .redaction import redact_arguments
+
+
+def encode_cursor(occurred_at: datetime, decision_id: str) -> str:
+    """The position of one audit row, in a form a client can hold and hand back.
+
+    Opaque by intent, not by encryption: it is base64 of the sort key, so a
+    client that decodes it learns ``(occurred_at, id)`` -- which it was already
+    shown in the entry the cursor came from. It is not documented as a stable
+    format because it is one sort-key change away from being a different format,
+    and a client should carry it rather than build one.
+    """
+    raw = f"{occurred_at.isoformat()}|{decision_id}"
+    return base64.urlsafe_b64encode(raw.encode("utf-8")).decode("ascii").rstrip("=")
+
+
+def decode_cursor(cursor: str) -> tuple[datetime, str]:
+    """Inverse of :func:`encode_cursor`, raising ``ValueError`` on anything else.
+
+    Raises rather than returning ``None`` so the caller cannot forget: a cursor
+    that silently decoded to nothing would read as "the beginning of the trail",
+    which is the one wrong answer a paging read must never give -- it would look
+    like a client looping forever rather than like a bad request.
+    """
+    # Padding is restored rather than required: `=` is awkward in a query string
+    # and in a shell, so it is stripped on the way out and put back here.
+    padded = cursor + "=" * (-len(cursor) % 4)
+    try:
+        raw = base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8")
+    except (binascii.Error, UnicodeDecodeError, UnicodeEncodeError) as exc:
+        raise ValueError(f"not valid base64: {exc}") from exc
+    stamp, separator, decision_id = raw.partition("|")
+    if not separator or not decision_id:
+        raise ValueError("missing the separator or the decision id")
+    try:
+        occurred_at = datetime.fromisoformat(stamp)
+    except ValueError as exc:
+        raise ValueError(f"does not carry a timestamp: {exc}") from exc
+    if occurred_at.tzinfo is None:
+        # A naive timestamp would compare against stored values that are always
+        # UTC and be silently wrong by the machine's offset, which shifts which
+        # rows a page returns rather than failing.
+        raise ValueError("its timestamp has no timezone")
+    # Normalised to UTC before it reaches the query: SQLite compares timestamps
+    # as text, so a cursor in another offset would compare by its written digits
+    # rather than by the instant they denote.
+    return as_utc(occurred_at), decision_id
 
 
 def digest_arguments(arguments: Mapping[str, Any]) -> str:
@@ -282,6 +330,7 @@ class DecisionRepository:
         project_ids: Sequence[int] | None = None,
         limit: int = 50,
         verdict: str | None = None,
+        cursor: tuple[datetime, str] | None = None,
     ) -> Sequence[Decision]:
         """Recent rows, optionally narrowed to one project or to a set of them.
 
@@ -291,6 +340,17 @@ class DecisionRepository:
         empty sequence returns nothing rather than everything -- a caller
         allowed to name no workspace is not the same as a caller allowed to name
         all of them, and the two are one falsy check apart.
+
+        ``cursor`` is a *keyset*, not an offset, and the difference is why an
+        audit read can be paged at all. ``OFFSET`` makes the server re-count
+        every row it already skipped, so page N costs N times page 1; worse, a
+        decision recorded between two requests shifts every later page by one,
+        which silently repeats a row or drops one. For a trail whose whole value
+        is completeness, silently dropping a row is the failure mode to design
+        out. Comparing ``(occurred_at, id)`` against the last row of the previous
+        page is one index seek, and ``id`` is in the comparison because two
+        decisions can share a timestamp -- breaking that tie differently on each
+        page is the same repeat-or-skip bug in miniature.
         """
         statement = select(Decision).order_by(Decision.occurred_at.desc(), Decision.id.desc())
         if project_id is not None:
@@ -301,6 +361,17 @@ class DecisionRepository:
             statement = statement.where(Decision.project_id.in_(project_ids))
         if verdict is not None:
             statement = statement.where(Decision.verdict == verdict)
+        if cursor is not None:
+            occurred_at, decision_id = cursor
+            statement = statement.where(
+                or_(
+                    Decision.occurred_at < occurred_at,
+                    and_(
+                        Decision.occurred_at == occurred_at,
+                        Decision.id < decision_id,
+                    ),
+                )
+            )
         return self._session.scalars(statement.limit(limit)).all()
 
     def project_root_for(self, decision_id: str) -> str | None:
