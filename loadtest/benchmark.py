@@ -15,26 +15,26 @@ The gaps between them are the answer, and the answer is **not the one the
 architecture suggests**. Measured on a 16-core Windows machine, 2000 iterations
 per layer:
 
-    engine              p50   27us    p99    74us
-    service-uncached    p50  995us    p99  3926us
-    service-cached      p50  813us    p99  3175us
-    service-no-audit    p50  499us    p99   993us
-    service-8-threads   p50  884us    p99 110545us
-    http-4-threads      p50 4914us    p99  97447us
+    engine              p50   33us    p99   142us
+    service-uncached    p50 1658us    p99  5312us
+    service-cached      p50 1407us    p99  5998us
+    service-no-audit    p50  765us    p99  3419us
+    service-8-threads   p50 1829us    p99 94085us
+    http-4-threads      p50 25077us   p99 64368us
 
 Read that as three findings:
 
-1. **The rule layer is 3% of a request.** Optimising the matcher would move
+1. **The rule layer is 2% of a request.** Optimising the matcher would move
    nothing. The architecture is what makes this checkable rather than arguable:
    `decide()` is pure, so it can be timed on its own with no server in the way.
 2. **The audit insert dominates, and the cache barely matters.** Disabling the
-   audit write halves p50 and cuts p99 to a third; the grant cache saves 18%.
+   audit write halves p50 and cuts p99 by 43%; the grant cache saves 15%.
    That inverts the intuitive guess, which is that the database *read* is the
    cost.
-3. **Concurrency costs the tail, not the median.** Eight threads leave p50
-   almost unchanged and take p99 from 3.2ms to 110ms -- SQLite serialises
-   writers, so they queue. The median request is fine; the one that waits behind
-   seven writers is not.
+3. **Concurrency costs the tail, not the median.** Eight threads raise p50 by
+   30% and take p99 from 6.0ms to 94ms -- SQLite serialises writers, so they
+   queue. The median request is fine; the one that waits behind seven writers is
+   not.
 
 Which sets the next iteration's target: batch or buffer the audit write. It is
 deliberately *not* done here, and the reason is in `docs/architecture.md` --

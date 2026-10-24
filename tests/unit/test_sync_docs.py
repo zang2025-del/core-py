@@ -43,6 +43,33 @@ def _write_reports(tmp_path: Path, junit: str, percent: float = 94.1) -> tuple[P
     return junit_path, coverage_path
 
 
+#: A stand-in for ``loadtest/results.json``, same shape, carrying the values the
+#: published percentages were derived from. Passed to ``drift`` explicitly so
+#: these tests do not move when the real benchmark is re-run: a check of the
+#: checker must not depend on the data it checks.
+_RESULTS = {
+    "results": {
+        "engine": {"p50_us": 32.6, "p99_us": 142.2},
+        "service-uncached": {"p50_us": 1658.4, "p99_us": 5311.7},
+        "service-cached": {"p50_us": 1406.7, "p99_us": 5997.9},
+        "service-no-audit": {"p50_us": 764.6, "p99_us": 3418.5},
+    }
+}
+
+
+@pytest.fixture(autouse=True)
+def _no_tracked_benchmark(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the derived-figure checks out of the tests that are about counts.
+
+    Those tests point ``DOCUMENTS`` at a one-line temporary file, which contains
+    none of the percentages -- so without this, every pattern would be reported
+    as dead and each of them would fail for a reason that has nothing to do with
+    what it tests. The tests that *are* about the percentages pass ``results``
+    explicitly and are unaffected.
+    """
+    monkeypatch.setattr(sync_docs, "BENCHMARK_RESULTS", tmp_path / "absent.json")
+
+
 class TestReadingTheSuite:
     def test_the_totals_come_from_the_nested_testsuite(self, tmp_path):
         """The root element carries only ``name``. Reading it reported 0."""
@@ -101,6 +128,83 @@ class TestReportingDrift:
         monkeypatch.setattr(sync_docs, "DOCUMENTS", (document,))
 
         assert sync_docs.drift(sync_docs.Measurement(tests=783, coverage=94, seconds=12.0)) == []
+
+    def test_a_stale_derived_percentage_is_reported(self, tmp_path, monkeypatch):
+        """The figures nothing was checking, which is how "the rule layer is 3%"
+        survived a re-measurement that made it 2%.
+
+        Counts and durations were verified while these were not, and the reason
+        is structural rather than an oversight: a count is *reported* by the
+        suite, a percentage is *derived* from a latency run, and no code path
+        recomputed it. So the sentence stayed green in four documents.
+        """
+        document = tmp_path / "README.md"
+        document.write_text("规则层只占一次请求的 3%。\n", encoding="utf-8")
+        monkeypatch.setattr(sync_docs, "DOCUMENTS", (document,))
+
+        found = sync_docs.drift(
+            sync_docs.Measurement(tests=796, coverage=94, seconds=16.7), results=_RESULTS
+        )
+
+        assert [item.published for item in found] == ["占一次请求的 3%"]
+        assert found[0].actual.startswith("2%")
+        assert found[0].fixable is True
+
+    def test_a_derived_percentage_that_matches_reports_nothing(self, tmp_path, monkeypatch):
+        """The other half. A check that always fires is as useless as one that
+        never does, and there are seven phrases here that all have to agree."""
+        document = tmp_path / "README.md"
+        document.write_text(
+            "规则层只占一次请求的 2%。审计关掉 p99 降 43%，缓存只省 15%。\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(sync_docs, "DOCUMENTS", (document,))
+
+        found = sync_docs.drift(
+            sync_docs.Measurement(tests=796, coverage=94, seconds=16.7), results=_RESULTS
+        )
+
+        assert found == []
+
+    def test_a_reworded_phrase_is_reported_as_no_longer_checking(self, tmp_path, monkeypatch):
+        """A phrase-based check fails by matching nothing, and says nothing.
+
+        That is the same shape of silence this script was written to remove, so
+        a pattern that matches no document is a failure rather than a pass --
+        otherwise rewording one sentence retires its check without telling
+        anyone, and the run stays green.
+        """
+        document = tmp_path / "README.md"
+        document.write_text("规则层占比很小。\n", encoding="utf-8")
+        monkeypatch.setattr(sync_docs, "DOCUMENTS", (document,))
+
+        orphans = sync_docs.unmatched_derived_patterns(results=_RESULTS)
+
+        assert len(orphans) == len(sync_docs.DERIVED_FIGURES)
+        assert all(isinstance(pattern, str) for pattern in orphans)
+
+    def test_ci_skips_the_duration_but_still_checks_the_percentages(self, tmp_path, monkeypatch):
+        """What the CI step asks for, and why it is not "check nothing".
+
+        The duration belongs to the machine that ran the suite; on a runner it
+        would fail every push for a reason no change can fix, and a gate like
+        that gets deleted rather than obeyed. So CI turns that one comparison
+        off -- but it must still fail on a percentage, which is the whole point
+        of adding this step.
+        """
+        document = tmp_path / "README.md"
+        document.write_text(
+            "796 个测试，80 秒跑完，覆盖率 94%。规则层只占一次请求的 9%。\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(sync_docs, "DOCUMENTS", (document,))
+        measurement = sync_docs.Measurement(tests=796, coverage=94, seconds=16.7)
+
+        with_duration = sync_docs.drift(measurement, results=_RESULTS)
+        without = sync_docs.drift(measurement, results=_RESULTS, skip_duration=True)
+
+        assert [item.published for item in with_duration] == ["80 秒跑完", "占一次请求的 9%"]
+        assert [item.published for item in without] == ["占一次请求的 9%"]
 
 
 class TestRewriting:

@@ -180,6 +180,20 @@ jobs:
         run: |
           uv run --no-project permgate eval > /tmp/report.txt
           head -60 /tmp/report.txt
+      - name: the published figures match a real run
+        # A separate step rather than a test, because this is the one check that
+        # runs the whole suite and then compares the documents against it -- and
+        # because the point is that it fails. The percentages it verifies were
+        # wrong in four documents for a while and nothing noticed: the checker
+        # covered counts and durations, and a percentage had to be *recomputed*
+        # rather than read off a report, so nobody recomputed it.
+        #
+        # `--skip-duration` because this machine is not the one the documents
+        # describe: the test count and the coverage are properties of the code
+        # and must match, while the duration belongs to whatever box ran it, and
+        # a gate that fails on every push for a reason no change can fix gets
+        # deleted rather than obeyed.
+        run: uv run --no-project python tools/sync_docs.py --skip-duration
 
   docker:
     runs-on: ubuntu-latest

@@ -32,7 +32,7 @@
 
 ```
 Agent 工具调用权限网关（permgate） | 独立完成 | 2026.10
-FastAPI · SQLAlchemy 2.0 · SQLite/PostgreSQL · Prometheus · Docker · 796 测试 / 覆盖率 94%
+FastAPI · SQLAlchemy 2.0 · SQLite/PostgreSQL · Prometheus · Docker · 802 测试 / 覆盖率 94%
 
 S 背景：AI agent 会执行 shell 命令，而"这条命令危不危险"无法用规则穷举——
         terraform destroy 与 kubectl delete namespace production 是灾难性的，
@@ -72,7 +72,7 @@ R 结果：
     p99 涨 35×，PG 反过来（中位数涨 12×，尾部 2 线程好 4.1×、8 线程 1.9×）。
     到 16 线程两者收敛到同样差的尾部（1.07×）
   · 完整服务 p50 1407µs / p99 6.0ms / 529 ops/s；纯引擎 22,101 ops/s
-  · 796 个测试 12 秒跑完、覆盖率 94%、`mypy --strict` 与 `ruff` 全绿；
+  · 802 个测试、覆盖率 94%（全量跑完不到一分钟）、`mypy --strict` 与 `ruff` 全绿；
     其中 **119 条命令 × 4 项输出与原实现逐字对拍**，
     证明这是一次被验证过的移植而不是重写
   · 把已发布的安全指标钉成回归门禁：白名单召回 100% / 误伤 0%，
@@ -88,7 +88,7 @@ Agent 工具调用权限网关 | FastAPI · SQLAlchemy · Prometheus · Docker
   真正瓶颈是审计写入（关掉它 p50 减半、p99 降 43%），与直觉相反
 · 授权缓存的一致性：失效放在 commit 之后，撤销立即生效，TTL 只作跨进程兜底；
   幂等写入靠唯一约束 + 冲突重读；审计表 append-only（数据库触发器强制，非代码约定）、与授权同事务
-· 796 测试 / 覆盖率 94% / mypy strict 全绿；119 条命令与原实现逐字对拍；
+· 802 测试 / 覆盖率 94% / mypy strict 全绿；119 条命令与原实现逐字对拍；
   安全指标钉成回归门禁，CI 七个 job 强制
 ```
 
@@ -113,7 +113,7 @@ Agent 工具调用权限网关 | FastAPI · SQLAlchemy · Prometheus · Docker
 >
 > 这不是洁癖。它买到三件事：**第一**，规则层能离线评测——我拿 49 条标注命令
 > 加 11 条真实事故命令跑完整分类器，不需要服务器和数据库；**第二**，能穷举测试，
-> 796 个测试 12 秒跑完；**第三**——这条最关键——**性能瓶颈的位置变得显然**。
+> 802 个测试、覆盖率 94%，全量跑完不到一分钟；**第三**——这条最关键——**性能瓶颈的位置变得显然**。
 > 因为 `decide()` 是纯的，它唯一可能慢的原因就是它的输入拼装得慢，那我把性能
 > 预算压到授权查询和审计写入上就行了。
 >
@@ -256,7 +256,7 @@ Agent 工具调用权限网关 | FastAPI · SQLAlchemy · Prometheus · Docker
 | **配置** | pydantic-settings，全部来自环境变量；**测试一律 `_env_file=None`**——曾经因为读到了环境里残留的 `PERMGATE_PREAPPROVED_SCOPES`，四个拒绝类测试静默变成了通过 |
 | **迁移** | Alembic，URL 从应用自己的 settings 读（两处真相 = 迁移打到错的库上）。有一个用 `compare_metadata` 的测试断言**模型与迁移零差异**——这是「改了 models 忘了生成迁移，本地全绿、部署失败」那类 bug 的专用检查 |
 | **自己文档里的流程也要跑** | README 的 curl 示例是**照抄真实响应**的，不是手写的。为了做到这点我把文档里的每一步跑了一遍——抓到三个测试套件没抓到的问题：示例里的 `scope` 少写了标志、首次请求 12ms 被当成判定成本、以及**两个端点对「项目标识」给出了不同的答案**（决策端点返回解析后的根，授权端点回显原始输入）。它们全都不是因为功能坏了，而是因为**没人问过「客户端怎么把这两个接口串起来用」** |
-| **CI** | 七个 job：lint / types（mypy strict）/ test（3.10–3.12 矩阵，`--cov-fail-under=90`）/ postgres（同一套测试跑在 postgres:16 上）/ migrations（从空库迁移 + downgrade 往返）/ evaluation（重测安全指标）/ docker（构建镜像并打一次真实决策）。**每个门禁都是这个项目已经失败过一次的那一类** |
+| **CI** | 七个 job：lint / types（mypy strict）/ test（3.10–3.12 矩阵，`--cov-fail-under=90`）/ postgres（同一套测试跑在 postgres:16 上）/ migrations（从空库迁移 + downgrade 往返）/ evaluation（重测安全指标，并核对文档里的数字与实测一致）/ docker（构建镜像并打一次真实决策）。**每个门禁都是这个项目已经失败过一次的那一类** |
 | **安全** | BYPASS 模式默认不服务，且在**边缘**拒绝而不是引擎深处；客户端默认不能自选运行模式（能选模式的客户端能选 BYPASS，整个服务就变成装饰） |
 | **压测** | 最近邻分位（不插值），报的每个数字都是真实发生过的延迟；warm-up 与测量分离；**机器事实随数字打印** |
 
