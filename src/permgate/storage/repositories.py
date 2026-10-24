@@ -12,6 +12,7 @@ import binascii
 import hashlib
 import json
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, cast
 
@@ -20,7 +21,16 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .keys import find_project_root, normalise_root, project_key
-from .models import Client, ClientRoot, Decision, Grant, Project, as_utc, utcnow
+from .models import (
+    Client,
+    ClientRoot,
+    Decision,
+    Grant,
+    IdempotencyKey,
+    Project,
+    as_utc,
+    utcnow,
+)
 from .redaction import redact_arguments
 
 
@@ -68,6 +78,39 @@ def decode_cursor(cursor: str) -> tuple[datetime, str]:
     # as text, so a cursor in another offset would compare by its written digits
     # rather than by the instant they denote.
     return as_utc(occurred_at), decision_id
+
+
+@dataclass(frozen=True, slots=True)
+class StoredResponse:
+    """A key's fingerprint and the response it produced.
+
+    A plain value rather than the ORM row, so the service layer can hold it
+    after the session that read it is closed -- which is exactly what happens
+    when a replay returns early.
+    """
+
+    fingerprint: str
+    response: str
+
+
+def fingerprint_request(
+    *,
+    project_root: str,
+    tool: str,
+    arguments: Mapping[str, Any],
+    mode: str | None,
+) -> str:
+    """What the call asked for, as one hash.
+
+    Only the request goes in, never the identity: the key is already scoped per
+    caller, and folding the caller in twice would make a key legitimately
+    replayed by the same client after a token rotation look like a different
+    call. ``mode`` is included because the same call in a different run mode is
+    a different decision.
+    """
+    return digest_arguments(
+        {"project_root": project_root, "tool": tool, "arguments": arguments, "mode": mode}
+    )
 
 
 def digest_arguments(arguments: Mapping[str, Any]) -> str:
@@ -477,3 +520,51 @@ class ClientRepository:
             )
             or 0
         )
+
+
+class IdempotencyRepository:
+    """A caller's keys, and the responses they already produced."""
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def find(self, *, client: str, key: str) -> StoredResponse | None:
+        row = self._session.scalar(
+            select(IdempotencyKey).where(IdempotencyKey.client == client, IdempotencyKey.key == key)
+        )
+        if row is None:
+            return None
+        return StoredResponse(fingerprint=row.fingerprint, response=row.response)
+
+    def record(
+        self, *, client: str, key: str, fingerprint: str, response: str
+    ) -> tuple[StoredResponse, bool]:
+        """Store one key and its response. Returns ``(stored, created)``.
+
+        The unique constraint decides a concurrent duplicate rather than a
+        read-then-insert, and the loser gets the winner's value back -- the same
+        shape as ``GrantRepository.add`` and for the same reason: two requests
+        that arrive together both see nothing, and the tie has to be broken by
+        the database rather than by which one happens to check second.
+
+        A lost race rolls this transaction back, which also discards whatever
+        the caller had written alongside it. That is the point: the losing
+        duplicate must not leave a second audit row behind, or a retried call
+        would appear in the trail twice and the trail would stop being a record
+        of what happened.
+        """
+        row = IdempotencyKey(client=client, key=key, fingerprint=fingerprint, response=response)
+        self._session.add(row)
+        try:
+            self._session.flush()
+        except IntegrityError:
+            self._session.rollback()
+            winner = self.find(client=client, key=key)
+            if winner is None:
+                # The constraint fired for a reason this method cannot explain
+                # -- a different unique index, or a concurrent delete. Re-raised
+                # rather than reported as a duplicate: an unexplained conflict
+                # is a bug here, not a fact about the caller's request.
+                raise
+            return winner, False
+        return StoredResponse(fingerprint=fingerprint, response=response), True

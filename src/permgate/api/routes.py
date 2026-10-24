@@ -35,7 +35,9 @@ live here -- and having it in two places is how the weaker one wins.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query, Request, Response, status
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, Header, Query, Request, Response, status
 
 from ..observability.metrics import PrometheusMetrics
 from ..services.errors import DecisionNotFound, ModeNotAllowed
@@ -106,20 +108,40 @@ def _root_of_decision(container: Container, decision_id: str, principal: Princip
             "description": "The run mode is not served here, or the workspace is "
             "not one this client may name"
         },
+        409: {"description": "The Idempotency-Key was already used for a different request"},
         422: {"description": "Malformed request"},
     },
 )
 def create_decision(
+    *,
     payload: DecisionRequest,
     request: Request,
+    response: Response,
     principal: Principal = Depends(require_principal),
     container: Container = Depends(get_container),
+    idempotency_key: Annotated[
+        str | None,
+        Header(
+            alias="Idempotency-Key",
+            min_length=1,
+            max_length=255,
+            description="Optional. Send the same value to retry a call and get the "
+            "first answer back instead of a second decision. Reusing a key for a "
+            "different request is a 409, not a silently wrong verdict.",
+        ),
+    ] = None,
 ) -> DecisionResponse:
     """Decide whether a tool call may proceed.
 
     ``ALLOW`` -- run it. ``ASK`` -- stop and get a human, then POST the answer to
     ``/v1/decisions/{id}/answer``. ``DENY`` -- refuse, and hand ``reason`` back
     to the model so it can route around the refusal instead of retrying it.
+
+    With an ``Idempotency-Key``, a retry after a timeout is answered with the
+    first response rather than a second decision. That matters here more than in
+    most services: a retried ``ASK`` would raise a second prompt for a call a
+    human is already looking at, and a retried ``ALLOW`` would put two rows in
+    the trail for one command.
     """
     if payload.mode is not None and not container.settings.allow_client_supplied_mode:
         # A client that can choose its own run mode can choose BYPASS, which
@@ -148,7 +170,15 @@ def create_decision(
         # about who it is answers no question anyone auditing would ask.
         actor=principal.name,
         request_id=getattr(request.state, "request_id", None),
+        idempotency_key=idempotency_key,
     )
+    if result.replayed:
+        # A header rather than a field, so the body is byte-for-byte what the
+        # first call returned. A client comparing bodies to detect a replay --
+        # which is the obvious way to write one -- would otherwise see a
+        # difference that means nothing, and the guarantee would read as broken
+        # at exactly the moment it worked.
+        response.headers["Idempotency-Replayed"] = "true"
     return DecisionResponse(
         decision_id=result.decision_id,
         verdict=result.verdict,

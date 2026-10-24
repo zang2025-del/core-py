@@ -1,6 +1,6 @@
 """SQLAlchemy models.
 
-Five tables, and the shape of each one is a decision worth stating.
+Six tables, and the shape of each one is a decision worth stating.
 
 ``clients``
     Who is allowed to call the service, and ``client_roots`` -- which project
@@ -35,6 +35,15 @@ Five tables, and the shape of each one is a decision worth stating.
     database. Every request writes exactly one row, including the ones that were
     allowed -- an audit log that only records refusals cannot answer "what did
     the agent actually run last Tuesday", which is the question people ask.
+
+``idempotency_keys``
+    A caller's key, and the answer it already got. Scoped per caller, because
+    two clients that happen to pick the same key are not talking about the same
+    call -- and letting one replay the other's answer would make the key a way
+    to read a decision you were never part of. The response is stored here
+    rather than looked up in ``decisions`` so that replaying works even when a
+    deployment has turned audit storage off; this table is a response cache, not
+    a second audit trail, and a replay writes nothing to the trail.
 """
 
 from __future__ import annotations
@@ -296,6 +305,47 @@ class Decision(Base):
     answer_actor: Mapped[str | None] = mapped_column(String(128), nullable=True)
     granted_key: Mapped[str | None] = mapped_column(
         String(255), nullable=True, doc="Grant recorded by the answer, if any."
+    )
+
+
+class IdempotencyKey(Base):
+    """A caller's key, and the answer it already got.
+
+    The row is written in the same transaction as the decision it names, so a
+    crash cannot leave a key pointing at a decision that never landed -- and a
+    replay that finds no row is therefore a replay of a call that never
+    happened, which is the one case where deciding again is right.
+
+    ``fingerprint`` is what makes a reused key an error instead of a silently
+    wrong answer. The same key with different arguments is a client bug (a key
+    generated once and reused, or a truncated one), and answering it with the
+    first call's verdict would decide a call nobody evaluated.
+    """
+
+    __tablename__ = "idempotency_keys"
+    __table_args__ = (
+        # Per caller, not global: two clients that happen to pick the same key
+        # are not talking about the same call, and a shared namespace would let
+        # one read back a decision it was never part of.
+        UniqueConstraint("client", "key", name="uq_idempotency_client_key"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    client: Mapped[str] = mapped_column(
+        String(64), nullable=False, doc="The authenticated caller the key belongs to."
+    )
+    key: Mapped[str] = mapped_column(String(255), nullable=False)
+    fingerprint: Mapped[str] = mapped_column(
+        String(64), nullable=False, doc="SHA-256 over what the call asked for."
+    )
+    response: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+        doc="JSON snapshot of the response, so a replay works even when audit "
+        "storage is off. This table is a response cache, not a second trail.",
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
     )
 
 

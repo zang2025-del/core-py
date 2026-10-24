@@ -19,6 +19,7 @@ dashboards lie in exactly the situation where someone is reading them.
 
 from __future__ import annotations
 
+import json
 import time
 import uuid
 from collections.abc import Mapping
@@ -33,10 +34,18 @@ from ..domain.engine import GrantSet, PolicyProfile, decide, grant_for_answer
 from ..domain.policies import DEFAULT_REGISTRY, PolicyRegistry
 from ..observability.metrics import MetricsSink, NullMetrics
 from ..storage.cache import GrantCache, NullGrantCache
-from ..storage.repositories import DecisionRepository, GrantRepository, ProjectRepository
+from ..storage.repositories import (
+    DecisionRepository,
+    GrantRepository,
+    IdempotencyRepository,
+    ProjectRepository,
+    StoredResponse,
+    fingerprint_request,
+)
 from .errors import (
     AlreadyAnswered,
     DecisionNotFound,
+    IdempotencyConflict,
     InvalidAnswer,
     ModeNotAllowed,
 )
@@ -55,6 +64,7 @@ class DecisionResult:
     scope: str | None
     latency_us: int
     project_root: str
+    replayed: bool = False
 
     @property
     def allowed(self) -> bool:
@@ -115,6 +125,7 @@ class DecisionService:
         mode: RunMode | None = None,
         actor: str | None = None,
         request_id: str | None = None,
+        idempotency_key: str | None = None,
     ) -> DecisionResult:
         resolved_mode = mode or self._settings.default_run_mode
         if resolved_mode is RunMode.BYPASS and not self._settings.allow_bypass_mode:
@@ -136,6 +147,35 @@ class DecisionService:
         try:
             projects = ProjectRepository(session)
             project = projects.get_or_create(project_root)
+            root = project.root
+
+            # Scoped to the authenticated identity, which in this service is
+            # ``actor`` -- the router fills it from the credential and never from
+            # the request body. Without authentication every caller is the same
+            # ``anonymous``, so they share one namespace; that is consistent with
+            # a deployment where they already share every other permission.
+            key_owner = actor or "anonymous"
+            keys = IdempotencyRepository(session) if idempotency_key else None
+            fingerprint: str | None = None
+            if keys is not None and idempotency_key is not None:
+                # Fingerprinted on the *resolved* root, so `proj` and `./proj/`
+                # are the same call rather than two spellings of it -- a key that
+                # only matched an exact string would miss the retry it exists
+                # for, because a retry is usually rebuilt from other code.
+                fingerprint = fingerprint_request(
+                    project_root=root,
+                    tool=tool,
+                    arguments=arguments,
+                    mode=resolved_mode.value,
+                )
+                previous = keys.find(client=key_owner, key=idempotency_key)
+                if previous is not None:
+                    # Returned before the decision is evaluated and before any
+                    # metric counts one, because no decision happened. Counting
+                    # a replay as a decision would make a client's retry budget
+                    # look like traffic.
+                    return self._replay(previous, fingerprint=fingerprint)
+
             grants = self._grant_set(session, project.id)
 
             decision = decide(
@@ -168,7 +208,36 @@ class DecisionService:
                     request_id=request_id,
                 )
 
-            root = project.root
+            result = DecisionResult(
+                decision_id=decision_id,
+                verdict=decision.verdict,
+                rule=decision.rule.value,
+                reason=decision.reason,
+                scope=decision.scope,
+                latency_us=latency_us,
+                project_root=root,
+            )
+
+            if keys is not None and idempotency_key is not None and fingerprint is not None:
+                # Written in the same transaction as the audit row, so the two
+                # cannot disagree: a committed key always names a committed
+                # decision, and a replay that finds no key is a replay of a call
+                # whose transaction rolled back -- the one case where deciding
+                # again is the right answer.
+                stored, created = keys.record(
+                    client=key_owner,
+                    key=idempotency_key,
+                    fingerprint=fingerprint,
+                    response=_dump_result(result),
+                )
+                if not created:
+                    # A concurrent request with this key won. ``record`` rolled
+                    # this transaction back, which also discarded the audit row
+                    # written above -- deliberately, or a retried call would
+                    # appear in the trail twice. The winner's response is what
+                    # the caller gets.
+                    return self._replay(stored, fingerprint=fingerprint)
+
             session.commit()
         except Exception:
             session.rollback()
@@ -184,15 +253,40 @@ class DecisionService:
             latency_seconds=elapsed,
         )
 
-        return DecisionResult(
-            decision_id=decision_id,
-            verdict=decision.verdict,
-            rule=decision.rule.value,
-            reason=decision.reason,
-            scope=decision.scope,
-            latency_us=latency_us,
-            project_root=root,
-        )
+        return result
+
+    @staticmethod
+    def _replay(stored: StoredResponse, *, fingerprint: str) -> DecisionResult:
+        """The response a previous call with this key produced.
+
+        Raises ``IdempotencyConflict`` if the key was used for a different
+        request, and treats an unreadable snapshot the same way rather than as a
+        500: both mean "this key cannot answer the question being asked", and the
+        caller can act on that by using a new key. Returning the first call's
+        verdict for a different call would decide something nobody evaluated.
+        """
+        if stored.fingerprint != fingerprint:
+            raise IdempotencyConflict(
+                "this Idempotency-Key was already used for a different request",
+                details={"reason": "the request does not match the one that used this key"},
+            )
+        try:
+            payload = json.loads(stored.response)
+            return DecisionResult(
+                decision_id=payload["decision_id"],
+                verdict=Verdict(payload["verdict"]),
+                rule=payload["rule"],
+                reason=payload["reason"],
+                scope=payload["scope"],
+                latency_us=payload["latency_us"],
+                project_root=payload["project_root"],
+                replayed=True,
+            )
+        except (ValueError, KeyError, TypeError) as exc:
+            raise IdempotencyConflict(
+                "the stored response for this Idempotency-Key could not be read",
+                details={"reason": str(exc)},
+            ) from exc
 
     # ------------------------------------------------------------- answer
 
@@ -294,9 +388,29 @@ class DecisionService:
 
 
 def _dump(arguments: Mapping[str, Any]) -> str:
-    import json
-
     return json.dumps(arguments, sort_keys=True, default=str)
+
+
+def _dump_result(result: DecisionResult) -> str:
+    """A decision, in a form a replay can rebuild.
+
+    ``verdict`` and ``rule`` are stored as their string values rather than as
+    the enum objects, because this goes into a text column and comes back as
+    JSON: writing an enum name would work and then break the day one of them is
+    renamed, with the failure landing on whoever replays an old key.
+    """
+    return json.dumps(
+        {
+            "decision_id": result.decision_id,
+            "verdict": result.verdict.value,
+            "rule": result.rule,
+            "reason": result.reason,
+            "scope": result.scope,
+            "latency_us": result.latency_us,
+            "project_root": result.project_root,
+        },
+        sort_keys=True,
+    )
 
 
 def _rule_of(row: Any) -> Rule:

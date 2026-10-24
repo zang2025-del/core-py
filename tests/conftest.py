@@ -113,18 +113,42 @@ def _drop_test_schemas():
     run -- and on a shared server it is somebody else's problem. The finaliser
     is deliberately tied to the session, not the test, so a ``--pdb`` session
     that aborts leaves its schemas inspectable.
+
+    **One transaction per schema**, which is not the obvious way to write this.
+    Dropping every schema in a single transaction needs a lock on every table,
+    index, sequence and trigger being dropped, all held until commit; past a few
+    hundred schemas that exceeds ``max_locks_per_transaction``, the statement
+    fails with "out of shared memory" (HINT: increase max_locks_per_transaction),
+    and the *whole* transaction rolls back -- so the litter survives, and the
+    failure lands as a teardown error on an otherwise green run. That is this
+    project's own history, not a hypothetical: the run that found it had about a
+    hundred and eighty accumulated schemas on a stock server.
+
+    Committing per schema keeps the lock demand flat and makes the cleanup
+    incremental, so one schema that refuses to drop costs the others nothing.
+    The names are materialised with ``.all()`` before any is dropped, because
+    dropping schemas while a cursor over ``pg_namespace`` is still open invites
+    trouble on some server versions.
     """
     yield
     if TEST_DATABASE_URL is None:
         return
-    with _admin_engine().begin() as connection:
-        names = connection.execute(
-            text("SELECT nspname FROM pg_namespace WHERE nspname LIKE :pattern"),
-            {"pattern": f"{_SCHEMA_PREFIX}%"},
-        ).scalars()
+    engine = _admin_engine()
+    try:
+        with engine.connect() as connection:
+            names = (
+                connection.execute(
+                    text("SELECT nspname FROM pg_namespace WHERE nspname LIKE :pattern"),
+                    {"pattern": f"{_SCHEMA_PREFIX}%"},
+                )
+                .scalars()
+                .all()
+            )
         for name in names:
-            connection.execute(text(f'DROP SCHEMA IF EXISTS "{name}" CASCADE'))
-    _admin_engine().dispose()
+            with engine.begin() as connection:
+                connection.execute(text(f'DROP SCHEMA IF EXISTS "{name}" CASCADE'))
+    finally:
+        engine.dispose()
 
 
 def build_settings(tmp_path, **overrides) -> Settings:

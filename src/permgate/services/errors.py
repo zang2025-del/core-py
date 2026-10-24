@@ -78,6 +78,19 @@ class InvalidCursor(ServiceError):
     code = "invalid_cursor"
 
 
+class IdempotencyConflict(ServiceError):
+    """A key that was already used for a different request.
+
+    The caller asked "is this the same call as before?" and the answer is no, so
+    answering with the first call's verdict would decide a call nobody
+    evaluated. A 409 rather than a 422 because the request is well-formed: it is
+    the *key* that conflicts with history.
+    """
+
+    status_code = 409
+    code = "idempotency_conflict"
+
+
 class AuthenticationRequired(ServiceError):
     """No usable credential: the caller is not identified.
 
