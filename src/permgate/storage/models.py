@@ -26,11 +26,15 @@ Five tables, and the shape of each one is a decision worth stating.
     tool-level" and makes the constraint do its job.
 
 ``decisions``
-    The audit trail. Append-only by convention -- nothing in the service issues
-    an UPDATE or DELETE against it -- and every request writes exactly one row,
-    including the ones that were allowed. An audit log that only records
-    refusals cannot answer "what did the agent actually run last Tuesday",
-    which is the question people ask.
+    The audit trail. **Append-only, and the database enforces it** -- not just
+    the service. A trigger refuses every DELETE, including the one that arrives
+    by cascade from ``projects``, and refuses every UPDATE except the single
+    transition from unanswered to answered. Before that trigger existed the rule
+    lived in a docstring and in the fact that one repository was the only writer;
+    both are true statements about the code and neither is a constraint on the
+    database. Every request writes exactly one row, including the ones that were
+    allowed -- an audit log that only records refusals cannot answer "what did
+    the agent actually run last Tuesday", which is the question people ask.
 """
 
 from __future__ import annotations
@@ -208,6 +212,10 @@ class Decision(Base):
     Every request lands here, allow or deny. The row is written inside the same
     transaction as the grant it may have created, so a crash cannot leave a
     grant with no record of who asked for it.
+
+    Nothing can rewrite it afterwards. The answer columns are the one exception,
+    and only from null to a value, once -- enforced by a database trigger rather
+    than by this class or by the service that writes it.
     """
 
     __tablename__ = "decisions"

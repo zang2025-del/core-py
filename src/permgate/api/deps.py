@@ -27,6 +27,7 @@ from ..services.grant_service import AuditService, GrantService
 from ..storage.cache import GrantCache, build_cache
 from ..storage.database import create_db_engine, create_session_factory
 from ..storage.models import Base
+from ..storage.triggers import install_append_only_triggers
 
 
 @dataclass(slots=True)
@@ -83,13 +84,20 @@ def build_container(settings: Settings, *, metrics: MetricsSink | None = None) -
 
 
 def create_schema(engine: Engine) -> None:
-    """Create the tables if they are not there.
+    """Create the tables if they are not there, and protect the audit trail.
 
     Alembic owns migrations; this exists so the test suite and a first local run
     do not need a migration step before they can do anything. Production runs
     ``alembic upgrade head`` and leaves the auto-create off.
+
+    The triggers are installed here as well as in the migration, from the same
+    module. Two paths that create the schema would otherwise be two places for
+    the append-only guarantee to drift apart -- and the drift would be invisible,
+    because a missing trigger looks exactly like a table that was never written
+    to.
     """
     Base.metadata.create_all(engine)
+    install_append_only_triggers(engine)
 
 
 def schema_revision(engine: Engine) -> str | None:
