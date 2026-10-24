@@ -66,14 +66,20 @@ uv pip install --python .venv/Scripts/python.exe -e ".[dev]"
 # 分类一条命令。不连数据库、不起服务
 uv run permgate classify "rm -rf ./build"
 
+# 建一个调用方凭证。服务默认要求身份认证，没有客户端它不会启动，
+# 所以这是起服务之前的一步。token 只打印这一次，库里只存它的摘要。
+uv run permgate client create --name me --root /home/dev/checkout-api
+
 # 起服务
 uv run permgate serve
 # 打开 http://127.0.0.1:8000/docs
 ```
 
 ```bash
-# 问一次裁决
-curl -s localhost:8000/v1/decisions -H 'content-type: application/json' -d '{
+# 问一次裁决。所有业务端点都要带 bearer token
+curl -s localhost:8000/v1/decisions \
+  -H 'content-type: application/json' \
+  -H 'authorization: Bearer <上面的 token>' -d '{
   "project_root": "/home/dev/checkout-api",
   "tool": "bash",
   "arguments": {"command": "terraform destroy -auto-approve"}
@@ -97,7 +103,8 @@ curl -s localhost:8000/v1/decisions -H 'content-type: application/json' -d '{
 ```bash
 # 人回答了：把授权收敛到这一条命令模式上，而不是整个 terraform
 curl -s localhost:8000/v1/decisions/8f14e45f.../answer \
-  -H 'content-type: application/json' -d '{"answer": "scoped"}'
+  -H 'content-type: application/json' \
+  -H 'authorization: Bearer <token>' -d '{"answer": "scoped"}'
 ```
 ```json
 {
@@ -111,7 +118,7 @@ curl -s localhost:8000/v1/decisions/8f14e45f.../answer \
 ```bash
 # 撤销它。key 里有空格，URL 路径段必须百分号编码。
 # removed=1 是撤掉了一条，0 是本来就没有
-curl -s -X DELETE \
+curl -s -X DELETE -H 'authorization: Bearer <token>' \
   "localhost:8000/v1/grants/bash%3Aterraform%20destroy%20-auto-approve?project_root=/home/dev/checkout-api"
 ```
 ```json
@@ -153,7 +160,7 @@ domain/       规则表、分类器、决策引擎   ─┘  纯函数，零 IO
 1. **规则层能离线评测。** `eval/` 用 49 条标注命令 + 11 条真实事故命令跑完整
    分类器和四种历史配置，不需要服务器、数据库、网络。§1 和 §5 的数字全部
    来自这里，可复现。
-2. **规则层能被穷举测试。** 676 个测试，8 秒跑完，覆盖率 93%。
+2. **规则层能被穷举测试。** 713 个测试，10 秒跑完，覆盖率 94%。
 3. **性能瓶颈的位置是显然的。** 因为 `decide()` 是纯的，它唯一可能慢的原因
    是它的输入拼装得慢——这把整个性能预算压到授权查询和审计写入上。§6 的
    测量证实了这一点，而且结论和直觉相反。
@@ -323,7 +330,7 @@ CI 清单是按**命令模式**（程序 + 动词 + 标志）列的，共 8 条�
 
 ## 8. 状态：已实现并验证 / 计划实现 / 明确不做
 
-**已实现并有测试覆盖（676 个测试 / 覆盖率 93% / `ruff` 与 `mypy --strict` 全绿）**
+**已实现并有测试覆盖（713 个测试 / 覆盖率 94% / `ruff` 与 `mypy --strict` 全绿）**
 
 - 命令词法、白名单分类、命令模式抽取（**119 条命令 × 4 项输出与原实现逐字对拍**）
 - 决策引擎的全部六个分支，含授权宽度/强度不对称
@@ -391,7 +398,7 @@ src/permgate/
 eval/              离线评测：语料、事故数据集、指标、报告
 loadtest/          分层延迟压测
 tools/             从原实现冻结对拍夹具（一次性）
-tests/             676 个测试 + 119 行对拍夹具
+tests/             713 个测试 + 119 行对拍夹具
 docs/              架构、后端简历材料、权限模型
 ```
 

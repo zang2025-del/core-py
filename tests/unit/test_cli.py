@@ -211,3 +211,135 @@ class TestParser:
 
         script = Path(cli.__file__).resolve().parent.parent.parent / "eval" / "run_eval.py"
         assert script.is_file()
+
+
+class TestClientAdministration:
+    """The way into a fresh deployment.
+
+    `client create` is the only thing that mints a credential, and the
+    fail-closed startup check means a deployment that never ran it does not come
+    up at all. An untested command here is not an untested convenience -- it is
+    an untested door, and the failure mode is a service that will not start with
+    no way to find out why from the tests.
+    """
+
+    @staticmethod
+    def _create(*argv: str) -> int:
+        return cli.main(["client", "create", *argv])
+
+    def test_create_prints_the_token_and_the_root_it_stored(self, isolated_settings, capsys):
+        assert (
+            self._create("--name", "ci", "--root", str(isolated_settings), "--token", "tok-1") == 0
+        )
+        out = capsys.readouterr().out
+        assert "tok-1" in out
+
+    def test_the_root_it_reports_is_the_normalised_one(self, isolated_settings, capsys):
+        """A root is stored in one canonical form, and a creation message that
+        echoed the typed string instead would suggest the allowlist holds
+        whatever the operator happened to type. On Windows those differ:
+        ``C:\\x`` and ``C:/x`` are the same directory."""
+        from pathlib import Path
+
+        assert self._create("--name", "ci", "--root", str(isolated_settings), "--token", "t") == 0
+        out = capsys.readouterr().out
+        assert Path(isolated_settings).resolve().as_posix() in out
+
+    def test_the_token_is_never_printed_again(self, isolated_settings, capsys):
+        """Shown once at creation because only a digest is stored. If `list`
+        could reproduce it the digest would be decoration."""
+        assert (
+            self._create("--name", "ci", "--root", str(isolated_settings), "--token", "secret-t")
+            == 0
+        )
+        capsys.readouterr()
+        assert cli.main(["client", "list"]) == 0
+        out = capsys.readouterr().out
+        assert "secret-t" not in out
+        assert "ci" in out
+        assert "active" in out
+
+    def test_create_requires_a_name(self, isolated_settings, capsys):
+        assert self._create("--root", str(isolated_settings)) == 2
+        assert "--name is required" in capsys.readouterr().err
+
+    def test_create_requires_at_least_one_root(self, isolated_settings, capsys):
+        """A client with no roots can authenticate and then be refused every
+        workspace name, which reads as a broken service rather than a
+        misconfigured client. The CLI refuses instead of letting that ship."""
+        assert self._create("--name", "ci") == 2
+        assert "at least one --root is required" in capsys.readouterr().err
+
+    def test_list_is_empty_before_anything_exists(self, isolated_settings, capsys):
+        assert cli.main(["client", "list"]) == 0
+        assert "(no clients)" in capsys.readouterr().out
+
+    def test_list_json_is_machine_readable(self, isolated_settings, capsys):
+        assert self._create("--name", "ci", "--root", str(isolated_settings), "--token", "t") == 0
+        capsys.readouterr()
+        assert cli.main(["client", "list", "--json"]) == 0
+        rows = json.loads(capsys.readouterr().out)
+        assert [row["name"] for row in rows] == ["ci"]
+        assert rows[0]["active"] is True
+        assert rows[0]["revoked_at"] is None
+        assert len(rows[0]["roots"]) == 1
+
+    def test_revoke_takes_effect_and_is_visible(self, isolated_settings, capsys):
+        assert self._create("--name", "ci", "--root", str(isolated_settings), "--token", "t") == 0
+        capsys.readouterr()
+        assert cli.main(["client", "revoke", "--name", "ci"]) == 0
+        assert "revoked ci" in capsys.readouterr().out
+        assert cli.main(["client", "list", "--json"]) == 0
+        rows = json.loads(capsys.readouterr().out)
+        assert rows[0]["active"] is False
+        assert rows[0]["revoked_at"] is not None
+
+    def test_revoking_an_unknown_client_is_an_error_not_a_quiet_success(
+        self, isolated_settings, capsys
+    ):
+        """Exiting 0 for "I revoked nothing" makes a typo in a name look like a
+        credential that has been turned off."""
+        assert cli.main(["client", "revoke", "--name", "nobody"]) == 2
+        assert "no active client named" in capsys.readouterr().err
+
+    def test_recreating_a_client_replaces_its_allowlist_rather_than_appending(
+        self, isolated_settings, capsys
+    ):
+        """Re-running `create` is how a mistakenly revoked client is brought
+        back, so it has to converge on what was asked for -- an allowlist that
+        only ever grows would silently keep a root somebody meant to remove."""
+        from pathlib import Path
+
+        first = isolated_settings / "one"
+        second = isolated_settings / "two"
+        first.mkdir()
+        second.mkdir()
+        assert self._create("--name", "ci", "--root", str(first), "--token", "t") == 0
+        assert self._create("--name", "ci", "--root", str(second), "--token", "t2") == 0
+        capsys.readouterr()
+        assert cli.main(["client", "list", "--json"]) == 0
+        rows = json.loads(capsys.readouterr().out)
+        assert [Path(root) for root in rows[0]["roots"]] == [second.resolve()]
+
+    def test_a_created_token_actually_authenticates(self, isolated_settings, capsys):
+        """End to end, across the two halves that meet here: what `create` wrote
+        has to be what `require_principal` looks up, or the only way into a
+        deployment produces a credential the service does not accept."""
+        from permgate.api.security import token_digest
+        from permgate.storage.database import create_db_engine, create_session_factory
+        from permgate.storage.repositories import ClientRepository
+
+        assert (
+            self._create("--name", "ci", "--root", str(isolated_settings), "--token", "real") == 0
+        )
+        capsys.readouterr()
+
+        engine = create_db_engine(get_settings())
+        try:
+            with create_session_factory(engine)() as session:
+                found = ClientRepository(session).find_active_by_token_hash(token_digest("real"))
+                assert found is not None
+                assert found.name == "ci"
+                assert ClientRepository(session).roots_for(found.id)
+        finally:
+            engine.dispose()

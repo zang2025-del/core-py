@@ -121,15 +121,34 @@ jobs:
         run: |
           docker run -d --name permgate-ci -p 8000:8000 \
             -e PERMGATE_DATABASE_URL=sqlite+pysqlite:////data/permgate.db \
+            -e PERMGATE_AUTH_BOOTSTRAP_TOKEN=ci-bootstrap-token \
+            -e PERMGATE_AUTH_BOOTSTRAP_ROOTS='["/tmp/ci"]' \
             permgate:ci
           for _ in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:8000/readyz; then break; fi
             sleep 1
           done
           curl -fsS http://127.0.0.1:8000/healthz
+          # A decision without a credential is refused, and *that* is asserted
+          # before the authenticated one succeeds. A container that comes up and
+          # answers everyone would pass the next check on its own; this line is
+          # what makes "identity is on inside the image" a checked claim rather
+          # than a property of the source tree.
+          test "$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+            http://127.0.0.1:8000/v1/decisions \
+            -H 'content-type: application/json' \
+            -d '{"project_root":"/tmp/ci","tool":"bash","arguments":{"command":"ls -la"}}')" = 401
           curl -fsS -X POST http://127.0.0.1:8000/v1/decisions \
             -H 'content-type: application/json' \
+            -H 'authorization: Bearer ci-bootstrap-token' \
             -d '{"project_root":"/tmp/ci","tool":"bash","arguments":{"command":"ls -la"}}'
+          # And a workspace outside the allowlist is refused even with a valid
+          # token: authentication and authorisation are separate answers.
+          test "$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+            http://127.0.0.1:8000/v1/decisions \
+            -H 'content-type: application/json' \
+            -H 'authorization: Bearer ci-bootstrap-token' \
+            -d '{"project_root":"/etc","tool":"bash","arguments":{"command":"ls -la"}}')" = 403
       - name: container logs
         if: failure()
         run: docker logs permgate-ci

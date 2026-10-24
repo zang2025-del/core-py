@@ -16,6 +16,13 @@ services:
       PERMGATE_DATABASE_URL: sqlite+pysqlite:////data/permgate.db
       PERMGATE_LOG_JSON: "true"
       PERMGATE_LOG_LEVEL: INFO
+      # Identity is on, so the stack needs a way in or it will not start. This
+      # default exists so `docker compose up` works on a laptop; it is not a
+      # secret and must not be carried anywhere real -- set the variable, or
+      # provision a client with `permgate client create` and unset it.
+      PERMGATE_AUTH_BOOTSTRAP_TOKEN: ${PERMGATE_AUTH_BOOTSTRAP_TOKEN:-local-dev-token-not-for-anything-else}
+      # Only the working directory the image runs in, deliberately not "/".
+      PERMGATE_AUTH_BOOTSTRAP_ROOTS: '["/app"]'
       # Off by default. Turning this on in a shared environment hands every
       # client the ability to skip consent entirely.
       PERMGATE_ALLOW_BYPASS_MODE: "false"
