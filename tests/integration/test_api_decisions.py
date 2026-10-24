@@ -104,7 +104,6 @@ class TestModePolicy:
 
         settings = build_settings(
             tmp_path,
-            database_url=f"sqlite+pysqlite:///{(tmp_path / 'b.db').as_posix()}",
             allow_client_supplied_mode=True,
             allow_bypass_mode=False,  # the point of the test
         )

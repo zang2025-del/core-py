@@ -21,6 +21,7 @@ from alembic.autogenerate import compare_metadata
 from alembic.config import Config
 from alembic.migration import MigrationContext
 from sqlalchemy import create_engine, inspect
+from tests.conftest import database_url_for
 
 from permgate.storage.models import Base
 
@@ -37,7 +38,7 @@ def _alembic_config(url: str) -> Config:
 
 @pytest.fixture
 def migrated_url(tmp_path) -> str:
-    url = f"sqlite+pysqlite:///{(tmp_path / 'migrated.db').as_posix()}"
+    url = database_url_for(tmp_path)
     command.upgrade(_alembic_config(url), "head")
     return url
 
@@ -93,7 +94,7 @@ class TestMigrations:
     def test_downgrade_then_upgrade_round_trips(self, tmp_path):
         """A migration with no working downgrade is a migration you cannot back
         out of at 3am."""
-        url = f"sqlite+pysqlite:///{(tmp_path / 'roundtrip.db').as_posix()}"
+        url = database_url_for(tmp_path)
         config = _alembic_config(url)
         command.upgrade(config, "head")
         command.downgrade(config, "base")

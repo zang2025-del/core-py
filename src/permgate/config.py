@@ -29,14 +29,28 @@ class Settings(BaseSettings):
         default="sqlite+pysqlite:///./permgate.db",
         description=(
             "SQLAlchemy URL. SQLite is the default because the service is small "
-            "and a single file is the whole deployment, but nothing in the "
-            "storage layer is SQLite-specific -- the tests run the same suite "
-            "against PostgreSQL through TEST_DATABASE_URL."
+            "and a single file is the whole deployment. Nothing in the storage "
+            "layer is SQLite-specific, but a server database needs a driver: "
+            "PostgreSQL is ``postgresql+psycopg://`` and the ``postgres`` extra "
+            "supplies psycopg. The suite runs against PostgreSQL in CI, so that "
+            "path is exercised rather than merely supported."
         ),
     )
     db_pool_size: int = Field(default=5, ge=1, le=64)
     db_max_overflow: int = Field(default=10, ge=0, le=128)
     db_echo: bool = False
+    create_schema_on_startup: bool | None = Field(
+        default=None,
+        description=(
+            "Create missing tables when the service starts. ``None`` means "
+            "'decide from the URL': SQLite, where a single file has no "
+            "migration step worth the name, gets them; a server database is "
+            "left to ``alembic upgrade head``, because a deployment's schema is "
+            "a migration's job. Set it explicitly to override -- the test suite "
+            "sets it true, so a PostgreSQL run does not depend on a separate "
+            "migration step being remembered."
+        ),
+    )
 
     # ---- the grant cache -------------------------------------------------
     #
@@ -166,6 +180,13 @@ class Settings(BaseSettings):
     @property
     def is_sqlite(self) -> bool:
         return self.database_url.startswith("sqlite")
+
+    @property
+    def schema_on_startup(self) -> bool:
+        """The resolved answer for ``create_schema_on_startup``."""
+        if self.create_schema_on_startup is None:
+            return self.is_sqlite
+        return self.create_schema_on_startup
 
 
 @lru_cache(maxsize=1)

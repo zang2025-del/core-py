@@ -29,10 +29,11 @@ from .observability.middleware import BodySizeLimitMiddleware, RequestContextMid
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     container: Container = app.state.container
-    if container.settings.is_sqlite:
+    if container.settings.schema_on_startup:
         # SQLite has no migration step worth the name for a single-file
         # database, so a first run creates it. A real deployment runs
-        # ``alembic upgrade head`` and this is a no-op.
+        # ``alembic upgrade head`` and leaves this off -- which is the default
+        # for a server database, where the schema belongs to a migration.
         create_schema(container.engine)
 
     # After the schema, before the first request is accepted. This raises when

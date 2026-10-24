@@ -160,7 +160,7 @@ domain/       规则表、分类器、决策引擎   ─┘  纯函数，零 IO
 1. **规则层能离线评测。** `eval/` 用 49 条标注命令 + 11 条真实事故命令跑完整
    分类器和四种历史配置，不需要服务器、数据库、网络。§1 和 §5 的数字全部
    来自这里，可复现。
-2. **规则层能被穷举测试。** 713 个测试，10 秒跑完，覆盖率 94%。
+2. **规则层能被穷举测试。** 720 个测试，12 秒跑完，覆盖率 94%。
 3. **性能瓶颈的位置是显然的。** 因为 `decide()` 是纯的，它唯一可能慢的原因
    是它的输入拼装得慢——这把整个性能预算压到授权查询和审计写入上。§6 的
    测量证实了这一点，而且结论和直觉相反。
@@ -330,11 +330,11 @@ CI 清单是按**命令模式**（程序 + 动词 + 标志）列的，共 8 条�
 
 ## 8. 状态：已实现并验证 / 计划实现 / 明确不做
 
-**已实现并有测试覆盖（713 个测试 / 覆盖率 94% / `ruff` 与 `mypy --strict` 全绿）**
+**已实现并有测试覆盖（720 个测试 / 覆盖率 94% / `ruff` 与 `mypy --strict` 全绿）**
 
 - 命令词法、白名单分类、命令模式抽取（**119 条命令 × 4 项输出与原实现逐字对拍**）
 - 决策引擎的全部六个分支，含授权宽度/强度不对称
-- SQLite 持久化：唯一约束、幂等写入、事务边界、级联删除
+- SQLite / PostgreSQL 持久化：唯一约束、幂等写入、事务边界、级联删除（**两种后端都跑整套测试**）
 - 授权缓存：TTL、容量上限、**每次写入后失效**（撤销立即生效）
 - HTTP 服务：两阶段决策流、授权管理、审计查询、错误契约、请求 ID
 - 可观测性：Prometheus 指标、结构化日志、liveness/readiness
@@ -353,12 +353,28 @@ mypy                                          # strict；配置写了一段时�
 pytest tests/ --cov=permgate --cov-fail-under=90
 ```
 
-`.github/workflows/ci.yml` 跑六个 job：`lint` / `types` / `test`（3.10–3.12 矩阵）/
-`migrations`（含从空库迁移与 downgrade 往返）/ `evaluation`（重测已发布的安全数字）/
-`docker`（构建镜像、起容器、打一次真实决策）。
+`.github/workflows/ci.yml` 跑七个 job：`lint` / `types` / `test`（3.10–3.12 矩阵）/
+`postgres`（同一套测试跑在 postgres:16 上，见下）/ `migrations`（含从空库迁移与
+downgrade 往返）/ `evaluation`（重测已发布的安全数字）/ `docker`（构建镜像、起容器、
+打一次真实决策）。
 
 **门禁写在配置文件里不算数，跑起来才算。** 上面注释里的两次事故都不是假设——
 所以这一节列的是命令，不是决心。
+
+**换后端跑同一套测试。** 默认是 SQLite，一条命令、一个文件、不需要服务器。
+把 `TEST_DATABASE_URL` 指向任意 PostgreSQL，整套测试就改在它上面跑：
+
+```bash
+uv pip install --python .venv/Scripts/python.exe -e ".[dev,postgres]"
+docker run -d -p 5432:5432 -e POSTGRES_PASSWORD=postgres postgres:16
+TEST_DATABASE_URL='postgresql+psycopg://postgres:postgres@127.0.0.1:5432/postgres' \
+  pytest tests/
+```
+
+每个测试拿到自己的 schema（不是自己的库），跑完整个 session 后统一清理，
+所以它和 SQLite 那条路径一样是「一个测试一个干净数据库」，不是共享状态。
+`tests/integration/test_database_backend.py` 断言的正是这件事——**测试跑在哪个
+后端上是可检查的**，而不是靠 `TEST_DATABASE_URL` 没被静默忽略来相信。
 
 **计划实现**
 
@@ -398,7 +414,7 @@ src/permgate/
 eval/              离线评测：语料、事故数据集、指标、报告
 loadtest/          分层延迟压测
 tools/             从原实现冻结对拍夹具（一次性）
-tests/             713 个测试 + 119 行对拍夹具
+tests/             720 个测试 + 119 行对拍夹具
 docs/              架构、后端简历材料、权限模型
 ```
 

@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 
 import pytest
+from tests.conftest import database_url_for
 
 from permgate import cli
 from permgate.config import get_settings
@@ -28,10 +29,15 @@ def isolated_settings(tmp_path, monkeypatch):
     the cache has to be cleared or the test picks up whatever the previous one
     left behind. That is the same trap that made four denial tests pass for the
     wrong reason earlier in this project's life.
+
+    The CLI reads the environment rather than taking a `Settings` object, so the
+    backend is selected here the way a deployment selects it -- through the URL.
+    `create_schema_on_startup` is set because these tests hit a database that has
+    never been migrated, and on a server database the default is to leave the
+    schema to `alembic`.
     """
-    monkeypatch.setenv(
-        "PERMGATE_DATABASE_URL", f"sqlite+pysqlite:///{(tmp_path / 'cli.db').as_posix()}"
-    )
+    monkeypatch.setenv("PERMGATE_DATABASE_URL", database_url_for(tmp_path))
+    monkeypatch.setenv("PERMGATE_CREATE_SCHEMA_ON_STARTUP", "true")
     monkeypatch.setenv("PERMGATE_LOG_LEVEL", "WARNING")
     monkeypatch.setenv("PERMGATE_LOG_JSON", "false")
     get_settings.cache_clear()

@@ -1,11 +1,13 @@
 # Local stack: the gateway, plus Prometheus so the metrics endpoint has
 # somewhere to go.
 #
-# PostgreSQL is included but commented out on purpose. The storage layer is not
-# SQLite-specific and the URL switch is one line -- but the test suite only runs
-# against SQLite, so shipping a compose file that quietly defaults to a database
-# nobody has verified would be claiming coverage that does not exist. Uncomment
-# it, run the suite against it, and it becomes a verified path.
+# PostgreSQL is included but commented out, because the point of the default
+# here is a stack that needs nothing else. The backend itself is not unverified:
+# CI runs the whole suite against postgres:16, so uncommenting this is switching
+# to a tested backend rather than adopting an untested one. Two things come with
+# it -- install the `postgres` extra for the driver, and run
+# `alembic upgrade head`, since the service will not create a server database's
+# schema on its own.
 
 services:
   permgate:

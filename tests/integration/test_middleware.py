@@ -9,7 +9,7 @@ does not error, it just costs memory.
 from __future__ import annotations
 
 from fastapi.testclient import TestClient
-from tests.conftest import authorised, build_settings
+from tests.conftest import authorised, build_settings, database_url_for
 
 from permgate.api.deps import build_container, create_schema
 from permgate.config import Settings
@@ -45,9 +45,7 @@ def _client(tmp_path, **overrides) -> TestClient:
     check. Sidestepping that check here would mean these tests measured a
     service configuration that cannot be deployed.
     """
-    settings = build_settings(
-        tmp_path, database_url=f"sqlite+pysqlite:///{(tmp_path / 'mw.db').as_posix()}", **overrides
-    )
+    settings = build_settings(tmp_path, **overrides)
     return authorised(TestClient(create_app(settings, metrics=RecordingMetrics())))
 
 
@@ -191,9 +189,33 @@ class TestContainerLifecycle:
 
 
 class TestSchemaBootstrap:
-    def test_the_schema_is_created_for_sqlite_on_startup(self, tmp_path):
+    def test_the_schema_is_created_on_startup_when_configured(self, tmp_path):
+        """The test settings ask for ``create_schema_on_startup``, so a run
+        against either backend comes up with tables rather than depending on a
+        migration step someone had to remember."""
         with _client(tmp_path) as client:
             assert client.get("/readyz").json()["status"] == "ready"
+
+    def test_a_server_database_is_not_created_by_default(self, tmp_path):
+        """A PostgreSQL deployment's schema belongs to ``alembic upgrade head``.
+
+        Coming up and creating tables would mean two things own the schema, and
+        the loser is whoever shipped a migration that a ``create_all`` had
+        already made unnecessary. ``None`` therefore resolves to "SQLite only".
+        """
+        assert Settings(_env_file=None, database_url="sqlite://").schema_on_startup is True
+        assert (
+            Settings(_env_file=None, database_url="postgresql+psycopg://h/db").schema_on_startup
+            is False
+        )
+        assert (
+            Settings(
+                _env_file=None,
+                database_url="postgresql+psycopg://h/db",
+                create_schema_on_startup=True,
+            ).schema_on_startup
+            is True
+        )
 
     def test_build_container_does_not_touch_the_schema(self, tmp_path):
         """`build_container` composes; `create_schema` creates. Mixing them
@@ -201,7 +223,7 @@ class TestSchemaBootstrap:
         object graph without also trying to write DDL."""
         settings = Settings(
             _env_file=None,
-            database_url=f"sqlite+pysqlite:///{(tmp_path / 'compose.db').as_posix()}",
+            database_url=database_url_for(tmp_path),
         )
         container = build_container(settings, metrics=RecordingMetrics())
         try:

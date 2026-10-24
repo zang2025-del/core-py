@@ -31,10 +31,14 @@ if config.config_file_name is not None:
 # supply its own connection -- it is how the migration test points the
 # environment at a throwaway database without touching the process environment
 # or the cached settings object.
-config.set_main_option(
-    "sqlalchemy.url",
-    config.attributes.get("sqlalchemy_url") or get_settings().database_url,
-)
+_url = config.attributes.get("sqlalchemy_url") or get_settings().database_url
+# ``set_main_option`` goes through ``configparser``, which reads ``%`` as the
+# start of an interpolation. A percent-encoded query parameter -- or a password
+# containing one -- therefore fails with "invalid interpolation syntax" raised
+# from inside Alembic, naming nothing that helps. Doubling is the documented
+# escape, and ``get_main_option`` unescapes it again, so the two directions stay
+# symmetric.
+config.set_main_option("sqlalchemy.url", _url.replace("%", "%%"))
 
 target_metadata = Base.metadata
 

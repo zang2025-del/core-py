@@ -98,6 +98,52 @@ jobs:
           PERMGATE_DATABASE_URL: sqlite+pysqlite:///./ci-fresh.db
         run: uv run --no-project alembic upgrade head --sql > /dev/null
 
+  postgres:
+    runs-on: ubuntu-latest
+    # The whole suite, on a real server database. Without this job PostgreSQL is
+    # a code path nobody has run -- which is what this project claimed it was
+    # not, in a docstring, for a while.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgresql+psycopg://postgres:postgres@127.0.0.1:5432/postgres
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv python install 3.12
+      - run: uv venv --python 3.12 .venv
+      - run: uv pip install --python .venv/bin/python -e ".[dev,postgres]"
+      # A backend switch that is silently ignored would let this job pass while
+      # measuring SQLite, so the assertions in the suite fail on the dialect as
+      # well as on the behaviour.
+      - name: pytest (the whole suite, against PostgreSQL)
+        run: >
+          uv run --no-project pytest tests/
+          --cov=permgate --cov-report=term-missing
+          --cov-fail-under=90
+      - name: a fresh database migrates from empty
+        env:
+          PERMGATE_DATABASE_URL: postgresql+psycopg://postgres:postgres@127.0.0.1:5432/postgres
+        run: |
+          uv run --no-project alembic upgrade head
+          uv run --no-project alembic current
+      - name: the SQL a migration would emit is reviewable
+        env:
+          PERMGATE_DATABASE_URL: postgresql+psycopg://postgres:postgres@127.0.0.1:5432/postgres
+        run: uv run --no-project alembic upgrade head --sql > /dev/null
+
   evaluation:
     runs-on: ubuntu-latest
     steps:

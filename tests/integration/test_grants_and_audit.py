@@ -177,7 +177,6 @@ class TestAuditApi:
 
         settings = build_settings(
             tmp_path,
-            database_url=f"sqlite+pysqlite:///{(tmp_path / 'noargs.db').as_posix()}",
             audit_store_arguments=False,
         )
         with authorised(TestClient(create_app(settings, metrics=metrics))) as client:
@@ -238,10 +237,7 @@ class TestOperations:
         from permgate.main import create_app
         from permgate.observability.metrics import PrometheusMetrics
 
-        settings = build_settings(
-            tmp_path,
-            database_url=f"sqlite+pysqlite:///{(tmp_path / 'm.db').as_posix()}",
-        )
+        settings = build_settings(tmp_path)
         with authorised(TestClient(create_app(settings, metrics=PrometheusMetrics()))) as client:
             client.post(
                 "/v1/decisions",

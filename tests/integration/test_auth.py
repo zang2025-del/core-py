@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import pytest
 from fastapi.testclient import TestClient
+from tests.conftest import database_url_for
 
 from permgate.api.deps import build_container, create_schema
 from permgate.api.security import token_digest
@@ -80,7 +81,8 @@ def _settings(tmp_path, **overrides) -> Settings:
     """
     values: dict = {
         "_env_file": None,
-        "database_url": f"sqlite+pysqlite:///{(tmp_path / 'auth.db').as_posix()}",
+        "database_url": database_url_for(tmp_path),
+        "create_schema_on_startup": True,
         "log_level": "CRITICAL",
         "log_json": False,
     }

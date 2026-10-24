@@ -83,7 +83,7 @@ def cmd_decide(args: argparse.Namespace) -> int:
     settings = get_settings()
     container = build_container(settings)
     try:
-        if settings.is_sqlite:
+        if settings.schema_on_startup:
             create_schema(container.engine)
         result = container.decisions.evaluate(
             project_root=args.project,
@@ -116,7 +116,7 @@ def cmd_grants(args: argparse.Namespace) -> int:
     settings = get_settings()
     container = build_container(settings)
     try:
-        if settings.is_sqlite:
+        if settings.schema_on_startup:
             create_schema(container.engine)
         listing = container.grants.list_for_project(args.project)
     finally:
@@ -150,7 +150,7 @@ def cmd_revoke(args: argparse.Namespace) -> int:
     settings = get_settings()
     container = build_container(settings)
     try:
-        if settings.is_sqlite:
+        if settings.schema_on_startup:
             create_schema(container.engine)
         if args.all:
             result = container.grants.clear(project_root=args.project)
@@ -174,7 +174,7 @@ def cmd_audit(args: argparse.Namespace) -> int:
     settings = get_settings()
     container = build_container(settings)
     try:
-        if settings.is_sqlite:
+        if settings.schema_on_startup:
             create_schema(container.engine)
         entries = container.audit.recent(
             project_root=args.project, limit=args.limit, verdict=args.verdict
@@ -264,7 +264,7 @@ def cmd_client(args: argparse.Namespace) -> int:
     token: str | None = None
     stored_roots: tuple[str, ...] = ()
     try:
-        if settings.is_sqlite:
+        if settings.schema_on_startup:
             create_schema(container.engine)
         with session_scope(container.session_factory) as session:
             repo = ClientRepository(session)
