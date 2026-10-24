@@ -345,11 +345,22 @@ SAFE_PY_MODULES: frozenset[str] = frozenset(
 # names (``.ssh``, ``id_rsa``) are preceded by a separator or a space -- a bare
 # ``cat .env`` has a space in front of it, not a slash. Extension-style names
 # (``server.pem``) hang off a filename, so there is nothing in front of them.
-SENSITIVE_PATH = re.compile(
-    r"(^|[\s/\\~=])(\.ssh|\.aws|\.gnupg|\.kube|id_rsa|id_dsa|id_ecdsa|id_ed25519"
+#
+# The names are broken out of the pattern because ``storage/redaction.py``
+# decides which arguments may be written down by looking for the same credential
+# shapes with fewer boundary requirements. A second copy of this list would be a
+# second answer to "what is a credential", and the two would drift.
+CREDENTIAL_BOUNDARY = r"(^|[\s/\\~=])"
+CREDENTIAL_NAMES = (
+    r"\.ssh|\.aws|\.gnupg|\.kube|id_rsa|id_dsa|id_ecdsa|id_ed25519"
     r"|\.netrc|\.git-credentials|\.npmrc|\.pypirc|\.docker/config\.json"
-    r"|\.env|credentials|secrets)([/\\]|$|\.)"
-    r"|[\w.-]+\.(pem|key|p12|pfx)([/\\]|$)",
+    r"|\.env|credentials|secrets"
+)
+CREDENTIAL_SUFFIXES = r"pem|key|p12|pfx"
+
+SENSITIVE_PATH = re.compile(
+    rf"{CREDENTIAL_BOUNDARY}({CREDENTIAL_NAMES})([/\\]|$|\.)"
+    rf"|[\w.-]+\.({CREDENTIAL_SUFFIXES})([/\\]|$)",
     re.IGNORECASE,
 )
 

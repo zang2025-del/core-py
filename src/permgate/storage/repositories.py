@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 
 from .keys import find_project_root, normalise_root, project_key
 from .models import Client, ClientRoot, Decision, Grant, Project, utcnow
+from .redaction import redact_arguments
 
 
 def digest_arguments(arguments: Mapping[str, Any]) -> str:
@@ -198,11 +199,20 @@ class DecisionRepository:
         actor: str | None,
         request_id: str | None,
     ) -> Decision:
+        """Write one audit row.
+
+        Redaction happens here rather than at the call site on purpose: this is
+        the only statement in the service that writes ``decisions``, so putting
+        it here makes "can a credential reach this table?" a question with one
+        place to look, rather than a property of every caller remembering.
+        """
+        stored, redacted = redact_arguments(arguments, arguments_json)
         row = Decision(
             id=decision_id,
             project_id=project_id,
             tool=tool,
-            arguments=arguments_json,
+            arguments=stored,
+            arguments_redacted=redacted,
             arguments_digest=digest_arguments(arguments),
             verdict=verdict,
             rule=rule,

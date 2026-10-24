@@ -332,6 +332,7 @@ def list_audit(
                 answer=entry.answer,
                 granted_key=entry.granted_key,
                 arguments=entry.arguments,
+                arguments_redacted=entry.arguments_redacted,
                 arguments_digest=entry.arguments_digest,
             )
             for entry in entries

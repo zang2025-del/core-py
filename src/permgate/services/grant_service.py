@@ -97,6 +97,7 @@ class AuditView:
     answer: str | None
     granted_key: str | None
     arguments: dict[str, Any] | None
+    arguments_redacted: bool
     arguments_digest: str
 
 
@@ -307,6 +308,7 @@ class AuditService:
                     answer=row.answer,
                     granted_key=row.granted_key,
                     arguments=_load_json(row.arguments),
+                    arguments_redacted=row.arguments_redacted,
                     arguments_digest=row.arguments_digest,
                 )
                 for row in rows

@@ -18,7 +18,7 @@ delete from ``projects`` is refused too.
 
 from __future__ import annotations
 
-from sqlalchemy import Engine, text
+from sqlalchemy import Connection, Engine, text
 
 #: SQLite compares OLD and NEW column by column. The `WHEN NOT (...)` form means
 #: "abort unless every one of these holds", so an UPDATE that touches a column
@@ -40,9 +40,19 @@ _SQLITE_TRIGGERS = (
         AND NEW.answer IS NOT NULL
         AND OLD.id IS NEW.id
         AND OLD.project_id IS NEW.project_id
+        AND OLD.occurred_at IS NEW.occurred_at
         AND OLD.tool IS NEW.tool
-        AND OLD.verdict IS NEW.verdict
         AND OLD.arguments IS NEW.arguments
+        AND OLD.arguments_redacted IS NEW.arguments_redacted
+        AND OLD.arguments_digest IS NEW.arguments_digest
+        AND OLD.verdict IS NEW.verdict
+        AND OLD.rule IS NEW.rule
+        AND OLD.reason IS NEW.reason
+        AND OLD.scope IS NEW.scope
+        AND OLD.run_mode IS NEW.run_mode
+        AND OLD.latency_us IS NEW.latency_us
+        AND OLD.actor IS NEW.actor
+        AND OLD.request_id IS NEW.request_id
         AND OLD.answered_at IS NULL
         AND NEW.answered_at IS NOT NULL
     )
@@ -65,7 +75,16 @@ BEGIN
        OR OLD.rule IS DISTINCT FROM NEW.rule
        OR OLD.tool IS DISTINCT FROM NEW.tool
        OR OLD.project_id IS DISTINCT FROM NEW.project_id
+       OR OLD.occurred_at IS DISTINCT FROM NEW.occurred_at
        OR OLD.arguments IS DISTINCT FROM NEW.arguments
+       OR OLD.arguments_redacted IS DISTINCT FROM NEW.arguments_redacted
+       OR OLD.arguments_digest IS DISTINCT FROM NEW.arguments_digest
+       OR OLD.reason IS DISTINCT FROM NEW.reason
+       OR OLD.scope IS DISTINCT FROM NEW.scope
+       OR OLD.run_mode IS DISTINCT FROM NEW.run_mode
+       OR OLD.latency_us IS DISTINCT FROM NEW.latency_us
+       OR OLD.actor IS DISTINCT FROM NEW.actor
+       OR OLD.request_id IS DISTINCT FROM NEW.request_id
     THEN
         RAISE EXCEPTION 'decisions is append-only: immutable column changed';
     END IF;
@@ -99,21 +118,27 @@ def statements_for(dialect: str) -> tuple[str, ...]:
     )
 
 
-def install_append_only_triggers(engine: Engine) -> None:
-    """Install the triggers, idempotently.
+def create_append_only_triggers(connection: Connection) -> None:
+    """Install the triggers on an open connection, idempotently.
 
-    Called from ``create_schema`` as well as from the migration, so a test
-    database and a first local run have the same protection a migrated
-    deployment has. Those two paths normally disagree about who owns the schema;
-    here they call the same function, so they cannot drift.
+    Takes a connection rather than an engine because callers differ: the service
+    has an engine and wants a transaction, while a migration has a connection
+    and must not start its own. Both call this, so the two paths that create a
+    schema cannot drift -- and the drift would be invisible, because a missing
+    trigger looks exactly like a table nobody ever wrote to.
     """
-    dialect = engine.dialect.name
+    dialect = connection.dialect.name
+    if dialect == "postgresql":
+        # Replaced rather than skipped, so an edit to the function body reaches
+        # a database that already has an older one.
+        connection.execute(
+            text("DROP TRIGGER IF EXISTS decisions_append_only_trigger ON decisions")
+        )
+    for statement in statements_for(dialect):
+        connection.execute(text(statement))
+
+
+def install_append_only_triggers(engine: Engine) -> None:
+    """Install the triggers, in their own transaction."""
     with engine.begin() as connection:
-        if dialect == "postgresql":
-            # Replaced rather than skipped, so an edit to the function body
-            # reaches a database that already has an older one.
-            connection.execute(
-                text("DROP TRIGGER IF EXISTS decisions_append_only_trigger ON decisions")
-            )
-        for statement in statements_for(dialect):
-            connection.execute(text(statement))
+        create_append_only_triggers(connection)

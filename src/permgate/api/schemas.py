@@ -156,6 +156,7 @@ class AuditEntry(BaseModel):
     answer: str | None
     granted_key: str | None
     arguments: dict[str, Any] | None
+    arguments_redacted: bool
     arguments_digest: str
 
 

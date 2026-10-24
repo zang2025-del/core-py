@@ -43,6 +43,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     DateTime,
     ForeignKey,
     Index,
@@ -50,6 +51,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    false,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -236,6 +238,16 @@ class Decision(Base):
     tool: Mapped[str] = mapped_column(String(64), nullable=False)
     arguments: Mapped[str | None] = mapped_column(
         Text, nullable=True, doc="JSON, or NULL when argument storage is off."
+    )
+    arguments_redacted: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=false(),
+        doc="True when the arguments were withheld because the call looked like "
+        "it touched a credential. Distinguishes that from NULL-because-the-"
+        "operator-turned-storage-off, which is a different reason to have "
+        "nothing and a different thing to tell a reader.",
     )
     arguments_digest: Mapped[str] = mapped_column(
         String(64),
