@@ -139,26 +139,47 @@ def bench_engine(iterations: int) -> Samples:
 
 
 def _build_container(
-    tmp_path: Path, *, cache_enabled: bool, audit_enabled: bool = True, tag: str = "bench"
+    tmp_path: Path,
+    *,
+    cache_enabled: bool,
+    audit_enabled: bool = True,
+    tag: str = "bench",
+    database_url: str | None = None,
 ):
     from permgate.api.deps import build_container, create_schema
     from permgate.config import Settings
+    from permgate.storage.models import Base
 
+    if database_url is None:
+        url = f"sqlite+pysqlite:///{(tmp_path / f'{tag}.db').as_posix()}"
+    else:
+        url = database_url
     settings = Settings(
         _env_file=None,
-        database_url=f"sqlite+pysqlite:///{(tmp_path / f'{tag}.db').as_posix()}",
+        database_url=url,
         grant_cache_enabled=cache_enabled,
         audit_enabled=audit_enabled,
         log_json=False,
         log_level="WARNING",
     )
     container = build_container(settings)
+    if database_url is not None:
+        # A server database is shared across every variant in the run, so rows
+        # from one would inflate the next. The SQLite path gets isolation for
+        # free from a per-variant filename; this gives the server path the same
+        # starting state instead of letting it measure a growing table.
+        Base.metadata.drop_all(container.engine)
     create_schema(container.engine)
     return container
 
 
 def bench_service(
-    iterations: int, tmp_path: Path, *, cache_enabled: bool, audit_enabled: bool = True
+    iterations: int,
+    tmp_path: Path,
+    *,
+    cache_enabled: bool,
+    audit_enabled: bool = True,
+    database_url: str | None = None,
 ) -> Samples:
     """The service path with one cost switched off at a time.
 
@@ -173,7 +194,11 @@ def bench_service(
     else:
         name, tag = ("service-cached" if cache_enabled else "service-uncached"), "bench"
     container = _build_container(
-        tmp_path, cache_enabled=cache_enabled, audit_enabled=audit_enabled, tag=tag
+        tmp_path,
+        cache_enabled=cache_enabled,
+        audit_enabled=audit_enabled,
+        tag=tag,
+        database_url=database_url,
     )
     samples = Samples(name)
     project = str(tmp_path / "proj")
@@ -204,14 +229,25 @@ def bench_service(
     return samples
 
 
-def bench_service_threads(iterations: int, tmp_path: Path, *, threads: int) -> Samples:
+def bench_service_threads(
+    iterations: int,
+    tmp_path: Path,
+    *,
+    threads: int,
+    database_url: str | None = None,
+) -> Samples:
     """Service layer under concurrency.
 
     This is where SQLite's write path, the connection pool and the cache lock
     stop being free, and it is the variant that says whether the service is
     actually concurrent or merely thread-safe on paper.
+
+    On SQLite the tail here is writers queueing behind one another; on a server
+    database it is not, and running the same corpus against both is the only way
+    to tell which part of the tail belongs to the workload and which part belongs
+    to the backend.
     """
-    container = _build_container(tmp_path, cache_enabled=True)
+    container = _build_container(tmp_path, cache_enabled=True, database_url=database_url)
     project = str(tmp_path / "proj2")
     (tmp_path / "proj2").mkdir(exist_ok=True)
     (tmp_path / "proj2" / ".git").mkdir(exist_ok=True)
@@ -281,17 +317,26 @@ def bench_http(iterations: int, tmp_path: Path, *, threads: int, host: str, port
     from permgate.main import create_app
     from permgate.observability.metrics import PrometheusMetrics
 
+    project_path = tmp_path / "http-proj"
+    project_path.mkdir(exist_ok=True)
+    (project_path / ".git").mkdir(exist_ok=True)
+    project = str(project_path)
+
+    # Every business endpoint needs a credential, and the app refuses to start
+    # without one. A benchmark that could not authenticate would measure the
+    # 401 path -- and it would have measured it silently, since a rejected
+    # request is still a fast response.
+    token = "loadtest-token"
     settings = Settings(
         _env_file=None,
         database_url=f"sqlite+pysqlite:///{(tmp_path / 'http.db').as_posix()}",
         log_json=False,
         log_level="WARNING",
+        auth_bootstrap_token=token,
+        auth_bootstrap_roots=[project],
     )
     app = create_app(settings, metrics=PrometheusMetrics())
     server, thread = _serve(app, host, port)
-    project = str(tmp_path / "http-proj")
-    (tmp_path / "http-proj").mkdir(exist_ok=True)
-    (tmp_path / "http-proj" / ".git").mkdir(exist_ok=True)
 
     per_thread = max(1, iterations // threads)
     collected: list[list[float]] = [[] for _ in range(threads)]
@@ -302,12 +347,14 @@ def bench_http(iterations: int, tmp_path: Path, *, threads: int, host: str, port
     def worker(slot: int) -> None:
         try:
             with httpx.Client(base_url=base, timeout=30.0) as client:
+                headers = {"authorization": f"Bearer {token}"}
                 barrier.wait()
                 for index in range(per_thread):
                     command = COMMANDS[(slot + index) % len(COMMANDS)]
                     begin = time.perf_counter()
                     response = client.post(
                         "/v1/decisions",
+                        headers=headers,
                         json={
                             "project_root": project,
                             "tool": "bash",
@@ -398,31 +445,70 @@ def main() -> int:
     parser.add_argument("--http-threads", type=int, default=4)
     parser.add_argument("--port", type=int, default=8731)
     parser.add_argument("--json", help="write raw numbers here")
+    parser.add_argument(
+        "--database-url",
+        help=(
+            "measure the service layers against this database instead of a temporary "
+            "SQLite file, e.g. postgresql+psycopg://user@host/db. The engine layer and "
+            "the HTTP layer stay on SQLite: the first does no IO at all, and the second "
+            "would report the socket rather than the backend."
+        ),
+    )
     args = parser.parse_args()
 
     if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
     samples: list[Samples] = []
-    with tempfile.TemporaryDirectory() as tmp:
+    # A cleanup race on a just-closed SQLite file would otherwise discard the
+    # whole run -- and the run is the evidence. Windows can hold the file for a
+    # moment after every container is closed; that is not a measurement failure.
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         tmp_path = Path(tmp)
 
         print("[1/6] engine (pure, no IO) ...", file=sys.stderr)
         samples.append(bench_engine(args.iterations))
 
         print("[2/6] service, cache off ...", file=sys.stderr)
-        samples.append(bench_service(args.iterations, tmp_path, cache_enabled=False))
+        samples.append(
+            bench_service(
+                args.iterations,
+                tmp_path,
+                cache_enabled=False,
+                database_url=args.database_url,
+            )
+        )
 
         print("[3/6] service, cache on ...", file=sys.stderr)
-        samples.append(bench_service(args.iterations, tmp_path, cache_enabled=True))
+        samples.append(
+            bench_service(
+                args.iterations,
+                tmp_path,
+                cache_enabled=True,
+                database_url=args.database_url,
+            )
+        )
 
         print("[4/6] service, cache on, audit off ...", file=sys.stderr)
         samples.append(
-            bench_service(args.iterations, tmp_path, cache_enabled=True, audit_enabled=False)
+            bench_service(
+                args.iterations,
+                tmp_path,
+                cache_enabled=True,
+                audit_enabled=False,
+                database_url=args.database_url,
+            )
         )
 
         print(f"[5/6] service, {args.threads} threads ...", file=sys.stderr)
-        samples.append(bench_service_threads(args.iterations, tmp_path, threads=args.threads))
+        samples.append(
+            bench_service_threads(
+                args.iterations,
+                tmp_path,
+                threads=args.threads,
+                database_url=args.database_url,
+            )
+        )
 
         print(f"[6/6] http, {args.http_threads} threads ...", file=sys.stderr)
         samples.append(

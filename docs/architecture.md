@@ -41,12 +41,22 @@ FastAPI、structlog 或 `os`。
 
 | 层 | p50 | p99 | ops/s |
 |---|---:|---:|---:|
-| engine（零 IO） | 27µs | 74µs | 28,958 |
-| service-uncached | 995µs | 3,926µs | 848 |
-| service-cached | 813µs | 3,175µs | 1,019 |
-| service-no-audit | **499µs** | **993µs** | 1,869 |
-| service-8-threads | 884µs | 110,545µs | 942 |
-| http-4-threads | 4,914µs | 97,447µs | 366 |
+| engine（零 IO） | 33µs | 142µs | 22,101 |
+| service-uncached | 1,658µs | 5,312µs | 482 |
+| service-cached | 1,407µs | 5,998µs | 529 |
+| service-no-audit | **765µs** | **3,419µs** | 1,022 |
+| service-8-threads | 1,829µs | 94,085µs | 575 |
+| http-4-threads | 25,077µs | 64,368µs | 147 |
+
+**这组数字比上一版慢，原因写在明处**：上一版 `results.json` 的 `executable`
+字段是 `D:\Projects\Core-c++\.venv\Scripts\python.exe`——数字来自另一个
+checkout，本仓库从未复现过。而这一版每个业务请求都多了鉴权：每请求 SQL 从
+2 条变 4 条（多一次 token 查询、一次 roots 查询）。HTTP 层差距最大，因为它
+同时吃到鉴权和栈开销。
+
+换后端的对照见 §6.1 之外的另一份测量：`loadtest/backends.py`，结论是
+**没有一个后端占优**——SQLite 守住中位数、丢掉尾部，PostgreSQL 反过来，
+到 16 线程两者收敛到同样差的尾部。
 
 **代价**：服务的每一层都要负责把 `decide()` 的输入拼装好（`GrantSet`、
 `PolicyProfile`、`PolicyRegistry`）。这个拼装逻辑在 `services/decision_service.py`
@@ -382,7 +392,7 @@ class AllowlistPolicy:
 | **多进程撤销有可见性延迟** | 上界 = TTL（默认 15s） |
 | **不做语义判断** | 读的是词法。变量展开后才变成 `rm -rf /*` 的命令，规则层在展开前无从判断 |
 | **脱敏只认「凭据形态」** | 凭据形态的参数不写进审计行（只留摘要，见 `storage/redaction.py`）。但 `--password=hunter2`、裸的 base64、以及「命令没点名、内容却是私钥的文件」都不认——把它扩成通用密钥检测是另一个量级的工作，误报率会先垮掉。要更严就整体关掉 `audit_store_arguments`，那样每次调用都只留摘要 |
-| **PostgreSQL 只在 CI 与单机上跑过** | 整套测试跑在 postgres:16 上（CI 的 `postgres` job，本地用 `TEST_DATABASE_URL` 指向任意 PG）。并发**正确性**两种后端都测过（§4.4 的条件 UPDATE，`test_concurrent_answers.py` 在后端切换后仍具判别力）。但**并发写入的排队行为只在 SQLite 上量过**——§6 的 p99 数字来自单机 SQLite，PG 上的写者排队没有测量。**「测过正确性」和「压测过」是两件事** |
+| **PostgreSQL 的写者排队已测量，但它不解决尾延迟** | 两种后端在同一个进程、同一批语料、1/2/4/8/16 线程下都量过（`loadtest/backends.py`，数字见 §1.3）。结论不是「PG 更快」：SQLite 的中位数几乎不随并发上升（1.8×）而 p99 涨 35×，PG 反过来（中位数涨 12×、尾部在 8 线程前明显更好）。**到 16 线程两者收敛到同样差的尾部（1.07×）**。三个解释被测过两个被否掉：不是 fsync（`synchronous_commit=off` 省 1.00×，服务器确为 `fsync=on`）、不是连接池（池 20 与默认 5 中位数相同）。**「测过正确性」和「压测过」仍是两件事**——这次只补上了后者的一半：单机、单一数据集、无真实客户端分布 |
 
 ---
 

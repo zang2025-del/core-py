@@ -1,0 +1,137 @@
+{
+  "machine": {
+    "platform": "Windows-10-10.0.26200-SP0",
+    "processor": "Intel64 Family 6 Model 186 Stepping 2, GenuineIntel",
+    "cpu_count": 16,
+    "python": "3.10.6",
+    "executable": "D:\\Projects\\Core-py\\.venv\\Scripts\\python.exe"
+  },
+  "scaling": {
+    "sqlite": {
+      "threads-1": {
+        "operations": 4000.0,
+        "throughput_per_second": 525.7,
+        "mean_us": 1899.7,
+        "p50_us": 1506.9,
+        "p90_us": 2568.1,
+        "p99_us": 6422.2,
+        "max_us": 59049.6,
+        "wall_seconds": 7.609
+      },
+      "threads-2": {
+        "operations": 4000.0,
+        "throughput_per_second": 586.6,
+        "mean_us": 3308.5,
+        "p50_us": 1751.1,
+        "p90_us": 4937.5,
+        "p99_us": 30996.1,
+        "max_us": 66094.2,
+        "wall_seconds": 6.819
+      },
+      "threads-4": {
+        "operations": 4000.0,
+        "throughput_per_second": 596.8,
+        "mean_us": 6049.0,
+        "p50_us": 1852.7,
+        "p90_us": 6246.7,
+        "p99_us": 57753.8,
+        "max_us": 2387478.8,
+        "wall_seconds": 6.703
+      },
+      "threads-8": {
+        "operations": 4000.0,
+        "throughput_per_second": 592.2,
+        "mean_us": 11860.3,
+        "p50_us": 1922.8,
+        "p90_us": 7785.2,
+        "p99_us": 110653.8,
+        "max_us": 3301054.2,
+        "wall_seconds": 6.755
+      },
+      "threads-16": {
+        "operations": 4000.0,
+        "throughput_per_second": 574.0,
+        "mean_us": 20092.4,
+        "p50_us": 2720.4,
+        "p90_us": 8202.9,
+        "p99_us": 222321.5,
+        "max_us": 5342872.3,
+        "wall_seconds": 6.968
+      }
+    },
+    "postgres": {
+      "threads-1": {
+        "operations": 4000.0,
+        "throughput_per_second": 328.2,
+        "mean_us": 3044.7,
+        "p50_us": 2691.3,
+        "p90_us": 4079.0,
+        "p99_us": 6996.6,
+        "max_us": 44222.8,
+        "wall_seconds": 12.188
+      },
+      "threads-2": {
+        "operations": 4000.0,
+        "throughput_per_second": 455.3,
+        "mean_us": 4375.6,
+        "p50_us": 4125.3,
+        "p90_us": 5725.2,
+        "p99_us": 7602.5,
+        "max_us": 47027.8,
+        "wall_seconds": 8.786
+      },
+      "threads-4": {
+        "operations": 4000.0,
+        "throughput_per_second": 504.6,
+        "mean_us": 7789.8,
+        "p50_us": 7494.8,
+        "p90_us": 10212.3,
+        "p99_us": 17693.9,
+        "max_us": 64548.4,
+        "wall_seconds": 7.927
+      },
+      "threads-8": {
+        "operations": 4000.0,
+        "throughput_per_second": 507.0,
+        "mean_us": 15568.0,
+        "p50_us": 14134.4,
+        "p90_us": 18652.5,
+        "p99_us": 59361.6,
+        "max_us": 119756.8,
+        "wall_seconds": 7.889
+      },
+      "threads-16": {
+        "operations": 4000.0,
+        "throughput_per_second": 409.1,
+        "mean_us": 38267.8,
+        "p50_us": 31876.1,
+        "p90_us": 55075.9,
+        "p99_us": 207193.1,
+        "max_us": 454294.3,
+        "wall_seconds": 9.776
+      }
+    }
+  },
+  "pool": {
+    "pool-default": {
+      "operations": 4000.0,
+      "throughput_per_second": 478.2,
+      "mean_us": 16445.2,
+      "p50_us": 14591.3,
+      "p90_us": 20538.8,
+      "p99_us": 62973.3,
+      "max_us": 222354.1,
+      "wall_seconds": 8.365
+    },
+    "pool-20": {
+      "operations": 4000.0,
+      "throughput_per_second": 495.8,
+      "mean_us": 15860.2,
+      "p50_us": 15043.6,
+      "p90_us": 20273.5,
+      "p99_us": 36311.1,
+      "max_us": 101173.8,
+      "wall_seconds": 8.068
+    }
+  }
+}

@@ -9,63 +9,63 @@
   "results": {
     "engine": {
       "operations": 2000.0,
-      "throughput_per_second": 28958.2,
-      "mean_us": 34.2,
-      "p50_us": 27.5,
-      "p90_us": 59.9,
-      "p99_us": 74.4,
-      "max_us": 367.4,
-      "wall_seconds": 0.069
+      "throughput_per_second": 22101.2,
+      "mean_us": 44.8,
+      "p50_us": 32.6,
+      "p90_us": 73.5,
+      "p99_us": 142.2,
+      "max_us": 1314.2,
+      "wall_seconds": 0.09
     },
     "service-uncached": {
       "operations": 2000.0,
-      "throughput_per_second": 847.8,
-      "mean_us": 1178.4,
-      "p50_us": 995.1,
-      "p90_us": 1380.0,
-      "p99_us": 3926.4,
-      "max_us": 16360.4,
-      "wall_seconds": 2.359
+      "throughput_per_second": 481.9,
+      "mean_us": 2073.1,
+      "p50_us": 1658.4,
+      "p90_us": 2887.5,
+      "p99_us": 5311.7,
+      "max_us": 37859.8,
+      "wall_seconds": 4.15
     },
     "service-cached": {
       "operations": 2000.0,
-      "throughput_per_second": 1019.1,
-      "mean_us": 980.1,
-      "p50_us": 812.6,
-      "p90_us": 1128.2,
-      "p99_us": 3175.0,
-      "max_us": 16568.3,
-      "wall_seconds": 1.962
+      "throughput_per_second": 528.6,
+      "mean_us": 1888.8,
+      "p50_us": 1406.7,
+      "p90_us": 2834.7,
+      "p99_us": 5997.9,
+      "max_us": 56064.4,
+      "wall_seconds": 3.784
     },
     "service-no-audit": {
       "operations": 2000.0,
-      "throughput_per_second": 1869.3,
-      "mean_us": 533.9,
-      "p50_us": 498.7,
-      "p90_us": 650.1,
-      "p99_us": 992.7,
-      "max_us": 1769.8,
-      "wall_seconds": 1.07
+      "throughput_per_second": 1022.2,
+      "mean_us": 976.8,
+      "p50_us": 764.6,
+      "p90_us": 1411.6,
+      "p99_us": 3418.5,
+      "max_us": 33881.7,
+      "wall_seconds": 1.957
     },
     "service-8-threads": {
       "operations": 2000.0,
-      "throughput_per_second": 942.1,
-      "mean_us": 6108.9,
-      "p50_us": 883.7,
-      "p90_us": 2509.2,
-      "p99_us": 110544.5,
-      "max_us": 1228607.5,
-      "wall_seconds": 2.123
+      "throughput_per_second": 575.2,
+      "mean_us": 10535.4,
+      "p50_us": 1828.5,
+      "p90_us": 6600.5,
+      "p99_us": 94085.3,
+      "max_us": 2911291.0,
+      "wall_seconds": 3.477
     },
     "http-4-threads": {
       "operations": 2000.0,
-      "throughput_per_second": 366.3,
-      "mean_us": 10496.4,
-      "p50_us": 4913.6,
-      "p90_us": 19545.5,
-      "p99_us": 97446.5,
-      "max_us": 331017.9,
-      "wall_seconds": 5.459
+      "throughput_per_second": 147.0,
+      "mean_us": 26787.9,
+      "p50_us": 25076.5,
+      "p90_us": 36804.6,
+      "p99_us": 64367.7,
+      "max_us": 142836.1,
+      "wall_seconds": 13.608
     }
   }
 }
