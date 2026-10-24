@@ -36,6 +36,17 @@ COPY --from=build /opt/venv /opt/venv
 # /data is where the SQLite file lives and is meant to be a volume. /app is the
 # working directory so that `permgate` resolves a project root sensibly when the
 # console script is run from inside the container.
+#
+# WORKDIR is set *before* the COPYs below, and that ordering is load-bearing. A
+# COPY's relative destination resolves against the working directory in effect at
+# that line, and a new stage starts from the base image's -- which is not /app.
+# Written the other way round, `COPY alembic.ini ./` put the file at the
+# container root while the process ran in /app, and `alembic upgrade head` failed
+# with "No 'script_location' key found in configuration". That message reads like
+# a malformed ini file; it actually means "there is no alembic.ini in this
+# directory". The ini was fine, and had the key on its first line.
+WORKDIR /app
+
 RUN useradd --create-home --uid 10001 permgate \
  && mkdir -p /data /app \
  && chown -R permgate:permgate /data /app
@@ -43,7 +54,6 @@ RUN useradd --create-home --uid 10001 permgate \
 COPY --chown=permgate:permgate alembic.ini ./
 COPY --chown=permgate:permgate migrations ./migrations
 
-WORKDIR /app
 USER permgate
 
 EXPOSE 8000
