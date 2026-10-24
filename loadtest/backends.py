@@ -33,11 +33,23 @@ Read that as a trade rather than a ranking:
    workload is latency-sensitive at the median or the tail, and on how many
    threads are actually running.
 
-Three explanations were tested and two were wrong, which is why they are listed:
+Three explanations were tested. Two were wrong and one could not be resolved at
+this sample size, which is why the third is recorded as unresolved rather than
+dropped:
 
 *Not the fsync.* PostgreSQL here runs with ``fsync=on`` and
-``synchronous_commit=on`` -- it is durable -- yet ``synchronous_commit=off``
-saves nothing measurable (1.00x). The median gap is not the commit flush.
+``synchronous_commit=on`` -- it is durable. Turning ``synchronous_commit`` off
+did not produce a consistent gain: across three runs at 8 threads the off
+configuration measured 1.25x, 1.19x and 0.70x of the durable one, so the third run
+reverses the first two. Within the two runs that share a harness the same durable
+configuration varied 1.27x on its own, which is the same size as the effect being
+looked for -- so at this sample size the setting is not separable from this
+machine's run-to-run noise. Two of the three runs measured the off configuration
+as *slower*, and removing a commit flush cannot plausibly slow a write down, which
+is further reason to read that direction as noise. What is ruled out is the older
+published claim that turning it off saves a measurable amount; what is not
+supported is the opposite assertion. Raw runs and the ratio arithmetic live in
+``loadtest/synchronous-commit.json``.
 
 *Not the connection pool.* At 8 threads a pool of 20 measures the same median as
 the default pool of 5 (15044us against 14591us -- the larger pool is marginally
@@ -79,6 +91,33 @@ for extra in (str(ROOT), str(ROOT / "src")):
 from loadtest.benchmark import COMMANDS, Samples, machine_facts  # noqa: E402
 
 THREAD_COUNTS = (1, 2, 4, 8, 16)
+
+#: ``synchronous_commit`` is per connection, so it rides in libpq's ``options``
+#: parameter -- which every pooled connection picks up without an event hook.
+NOSYNC_OPTION = "options=-c synchronous_commit%3Doff"
+
+
+def with_sync_commit_off(url: str) -> str:
+    """The same server with one durability setting changed."""
+    separator = "&" if "?" in url else "?"
+    return f"{url}{separator}{NOSYNC_OPTION}"
+
+
+def observed_sync_commit(url: str) -> str:
+    """What the connection believes, rather than what the URL asked for.
+
+    "Turning X off changed nothing" is only a finding if X was actually off, and
+    a query parameter that libpq silently ignored would make this measurement
+    say the opposite of the truth.
+    """
+    from sqlalchemy import create_engine, text
+
+    engine = create_engine(url)
+    try:
+        with engine.connect() as connection:
+            return str(connection.execute(text("SHOW synchronous_commit")).scalar())
+    finally:
+        engine.dispose()
 
 
 def run_service(
@@ -198,6 +237,86 @@ def render_scaling(title: str, samples: list[Samples]) -> list[str]:
     return out
 
 
+def build_report(
+    *,
+    facts: dict[str, str],
+    sqlite_samples: list[Samples],
+    pg_samples: list[Samples],
+    pool_samples: tuple[Samples, ...],
+    sync_observed: str,
+    nosync: Samples,
+) -> dict[str, object]:
+    """Everything the printed tables show, in a form a downstream check can read."""
+    return {
+        "machine": facts,
+        "scaling": {
+            "sqlite": {s.name: s.summary() for s in sqlite_samples},
+            "postgres": {s.name: s.summary() for s in pg_samples},
+        },
+        "pool": {s.name: s.summary() for s in pool_samples},
+        "synchronous_commit": {
+            "observed": sync_observed,
+            **{s.name: s.summary() for s in (pool_samples[0], nosync)},
+        },
+    }
+
+
+def render_single_thread_table(title: str, samples: tuple[Samples, ...]) -> list[str]:
+    """A small two-column table for one 8-thread variant comparison."""
+    header = f"  {title:<20}{'p50':>11}{'p99':>11}"
+    out = ["", f"  PostgreSQL, {title}", header, "  " + "-" * (len(header) - 2)]
+    for sample in samples:
+        summary = sample.summary()
+        out.append(f"  {sample.name:<20}{summary['p50_us']:>10.1f}u{summary['p99_us']:>10.1f}u")
+    return out
+
+
+def render_output(
+    *,
+    facts: dict[str, str],
+    sqlite_samples: list[Samples],
+    pg_samples: list[Samples],
+    pool_samples: tuple[Samples, ...],
+    nosync: Samples,
+    sync_observed: str,
+) -> str:
+    """The whole printed report, built in one place so ``main`` stays readable."""
+    lines: list[str] = []
+    lines.append("=" * 96)
+    lines.append("permgate -- the same request path on two backends")
+    lines.append("=" * 96)
+    lines.append("")
+    for key, value in facts.items():
+        lines.append(f"  {key:<12} {value}")
+    lines.extend(render_scaling("  SQLite", sqlite_samples))
+    lines.extend(render_scaling("  PostgreSQL", pg_samples))
+    lines.extend(render_single_thread_table("connection pool", pool_samples))
+    lines.extend(
+        render_single_thread_table(
+            f"synchronous_commit ({sync_observed} observed)",
+            (pool_samples[0], nosync),
+        )
+    )
+    lines.extend(
+        [
+            "",
+            "  The durability comparison is against pool-default: same server, same",
+            "  8 threads, one setting changed. If the median gap to SQLite were the",
+            "  commit flush, turning it off should close that gap. It does not do so",
+            "  reliably, but the run-to-run spread is as large as the effect, so this",
+            "  comparison settles nothing on its own. Exit status stays 0: it measured",
+            "  what it set out to measure, even though the answer is 'cannot tell'.",
+            "",
+            "  Both backends measured in this one process, same corpus, same conditions.",
+            "  The comparison is a trade: SQLite holds the median and loses the tail,",
+            "  PostgreSQL does the reverse. Neither dominates, so this table is not a",
+            "  ranking and must not be read as one.",
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -213,7 +332,6 @@ def main() -> int:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
     facts = machine_facts()
-    report: dict[str, object] = {"machine": facts, "scaling": {}, "pool": {}}
 
     # A cleanup race on a just-closed SQLite file would otherwise discard a
     # finished measurement, and the measurement is the point.
@@ -221,12 +339,12 @@ def main() -> int:
         tmp_path = Path(tmp)
 
         sqlite_url = f"sqlite+pysqlite:///{(tmp_path / 'compare.db').as_posix()}"
-        print("[1/3] SQLite across thread counts ...", file=sys.stderr)
+        print("[1/4] SQLite across thread counts ...", file=sys.stderr)
         sqlite_samples = scaling(sqlite_url, tmp_path / "sqlite", iterations=args.iterations)
-        print("[2/3] PostgreSQL across thread counts ...", file=sys.stderr)
+        print("[2/4] PostgreSQL across thread counts ...", file=sys.stderr)
         pg_samples = scaling(args.postgres_url, tmp_path / "pg", iterations=args.iterations)
 
-        print("[3/3] PostgreSQL with a larger pool, 8 threads ...", file=sys.stderr)
+        print("[3/4] PostgreSQL with a larger pool, 8 threads ...", file=sys.stderr)
         pool_default = run_service(
             args.postgres_url,
             tmp_path / "pg-pool-default",
@@ -243,38 +361,36 @@ def main() -> int:
             tag="pool-20",
         )
 
-    lines: list[str] = []
-    lines.append("=" * 96)
-    lines.append("permgate -- the same request path on two backends")
-    lines.append("=" * 96)
-    lines.append("")
-    for key, value in facts.items():
-        lines.append(f"  {key:<12} {value}")
-    lines.extend(render_scaling("  SQLite", sqlite_samples))
-    lines.extend(render_scaling("  PostgreSQL", pg_samples))
+        print("[4/4] PostgreSQL with synchronous_commit=off, 8 threads ...", file=sys.stderr)
+        sync_url = with_sync_commit_off(args.postgres_url)
+        sync_observed = observed_sync_commit(sync_url)
+        nosync = run_service(
+            sync_url,
+            tmp_path / "pg-nosync",
+            threads=8,
+            iterations=args.iterations,
+            tag="sync-commit-off",
+        )
 
-    pool_header = f"  {'pool (8 threads)':<20}{'p50':>11}{'p99':>11}"
-    lines.append("")
-    lines.append("  PostgreSQL, connection pool")
-    lines.append(pool_header)
-    lines.append("  " + "-" * (len(pool_header) - 2))
-    for sample in (pool_default, pool_raised):
-        summary = sample.summary()
-        lines.append(f"  {sample.name:<20}{summary['p50_us']:>10.1f}u{summary['p99_us']:>10.1f}u")
+    print(
+        render_output(
+            facts=facts,
+            sqlite_samples=sqlite_samples,
+            pg_samples=pg_samples,
+            pool_samples=(pool_default, pool_raised),
+            nosync=nosync,
+            sync_observed=sync_observed,
+        )
+    )
 
-    lines.append("")
-    lines.append("  Both backends measured in this one process, same corpus, same conditions.")
-    lines.append("  The comparison is a trade: SQLite holds the median and loses the tail,")
-    lines.append("  PostgreSQL does the reverse. Neither dominates, so this table is not a")
-    lines.append("  ranking and must not be read as one.")
-    lines.append("")
-    print("\n".join(lines))
-
-    report["scaling"] = {
-        "sqlite": {s.name: s.summary() for s in sqlite_samples},
-        "postgres": {s.name: s.summary() for s in pg_samples},
-    }
-    report["pool"] = {s.name: s.summary() for s in (pool_default, pool_raised)}
+    report = build_report(
+        facts=facts,
+        sqlite_samples=sqlite_samples,
+        pg_samples=pg_samples,
+        pool_samples=(pool_default, pool_raised),
+        sync_observed=sync_observed,
+        nosync=nosync,
+    )
 
     if args.json:
         path = Path(args.json)

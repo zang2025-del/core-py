@@ -1,0 +1,47 @@
+{
+  "question": "Is the PostgreSQL median gap to SQLite the cost of the commit flush (fsync) rather than the backend?",
+  "method": "The same server, the same corpus, 8 threads, one setting changed. `synchronous_commit` is per connection, so it is passed through libpq's options parameter; every run reads back SHOW synchronous_commit to prove the setting took effect rather than trusting the URL.",
+  "conclusion": "Inconclusive, and recorded as inconclusive. The ratio of the off configuration to the durable one came out 1.25x, 1.19x and 0.70x across three runs -- the third run reverses the direction of the first two. Within the two runs that share a harness, the same durable configuration varied 1.27x on its own, which is the same size as the effect being looked for. So at this sample size the setting is not separable from this machine's run-to-run noise. What the numbers do rule out is the older published claim that turning it off saves a measurable amount; what they do not support is the opposite assertion, that the commit flush is not involved.",
+  "runs": [
+    {
+      "id": "probe-1",
+      "harness": "ad-hoc probe, 1200 iterations, 8 threads",
+      "durable": {"p50_us": 16118.1, "p99_us": 54935.2},
+      "synchronous_commit_off": {"p50_us": 20163.0, "p99_us": 53928.1},
+      "off_over_durable": {"p50": 1.25, "p99": 0.98},
+      "observed_synchronous_commit": "off"
+    },
+    {
+      "id": "probe-2",
+      "harness": "ad-hoc probe, 1200 iterations, 8 threads",
+      "durable": {"p50_us": 20397.0, "p99_us": 77592.5},
+      "synchronous_commit_off": {"p50_us": 24244.1, "p99_us": 61733.9},
+      "off_over_durable": {"p50": 1.19, "p99": 0.80},
+      "observed_synchronous_commit": "off"
+    },
+    {
+      "id": "backends-py",
+      "harness": "loadtest/backends.py [4/4], 1000 iterations, 8 threads",
+      "durable": {"p50_us": 21730.3, "p99_us": 70607.4},
+      "synchronous_commit_off": {"p50_us": 15130.2, "p99_us": 57164.4},
+      "off_over_durable": {"p50": 0.70, "p99": 0.81},
+      "observed_synchronous_commit": "off"
+    }
+  ],
+  "noise": {
+    "durable_p50_us": [16118.1, 20397.0, 21730.3],
+    "same_harness_spread_x": 1.27,
+    "note": "probe-1 and probe-2 are the same harness, same iteration count, same thread count, same server -- only the run differs. Their durable p50 spans 1.27x, which is comparable to the 1.25x effect probe-1 was looking for. backends-py used a different corpus and iteration count, so its p50 is not on the same scale; only the ratio inside each run is comparable.",
+    "unexplained_direction": "Two of three runs measured the off configuration as *slower*. Removing a commit flush cannot plausibly slow a write, so that direction is more likely noise than a real cost."
+  },
+  "tail_observation": {
+    "note": "p99 was lower with the setting off in all three runs (0.98x, 0.80x, 0.81x). That is one consistent direction, unlike the median, but three runs on one machine and one pool size is not enough to promote it to a finding -- recorded here in the same spirit as the connection-pool p99 note in loadtest/backends.py rather than published as a conclusion.",
+    "off_over_durable_p99": [0.98, 0.80, 0.81]
+  },
+  "later_confirmation": {
+    "note": "After this file was written, the refactored harness was re-run end-to-end (600 iterations rather than 1000) to prove the restructure had not broken the measurement. It produced 11161.5us durable against 10841.5us with the setting off -- 0.97x, a fourth value in yet another direction. It is recorded here rather than added to `runs` because a different iteration count is a different measurement, not another sample of the same one.",
+    "off_over_durable_p50": 0.97,
+    "observed_synchronous_commit": "off"
+  },
+  "caveat": "One machine, one server instance, one corpus, 8 threads, ~1000-1200 requests per variant. The absolute latencies here are not comparable with loadtest/backends.json: re-running that harness in this session produced 0.56x-1.14x of the numbers in the committed file, so the machine is in a different state now and only within-run ratios should be read."
+}
