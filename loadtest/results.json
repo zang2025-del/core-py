@@ -1,0 +1,71 @@
+{
+  "machine": {
+    "platform": "Windows-10-10.0.26200-SP0",
+    "processor": "Intel64 Family 6 Model 186 Stepping 2, GenuineIntel",
+    "cpu_count": 16,
+    "python": "3.10.6",
+    "executable": "D:\\Projects\\Core-c++\\.venv\\Scripts\\python.exe"
+  },
+  "results": {
+    "engine": {
+      "operations": 2000.0,
+      "throughput_per_second": 28958.2,
+      "mean_us": 34.2,
+      "p50_us": 27.5,
+      "p90_us": 59.9,
+      "p99_us": 74.4,
+      "max_us": 367.4,
+      "wall_seconds": 0.069
+    },
+    "service-uncached": {
+      "operations": 2000.0,
+      "throughput_per_second": 847.8,
+      "mean_us": 1178.4,
+      "p50_us": 995.1,
+      "p90_us": 1380.0,
+      "p99_us": 3926.4,
+      "max_us": 16360.4,
+      "wall_seconds": 2.359
+    },
+    "service-cached": {
+      "operations": 2000.0,
+      "throughput_per_second": 1019.1,
+      "mean_us": 980.1,
+      "p50_us": 812.6,
+      "p90_us": 1128.2,
+      "p99_us": 3175.0,
+      "max_us": 16568.3,
+      "wall_seconds": 1.962
+    },
+    "service-no-audit": {
+      "operations": 2000.0,
+      "throughput_per_second": 1869.3,
+      "mean_us": 533.9,
+      "p50_us": 498.7,
+      "p90_us": 650.1,
+      "p99_us": 992.7,
+      "max_us": 1769.8,
+      "wall_seconds": 1.07
+    },
+    "service-8-threads": {
+      "operations": 2000.0,
+      "throughput_per_second": 942.1,
+      "mean_us": 6108.9,
+      "p50_us": 883.7,
+      "p90_us": 2509.2,
+      "p99_us": 110544.5,
+      "max_us": 1228607.5,
+      "wall_seconds": 2.123
+    },
+    "http-4-threads": {
+      "operations": 2000.0,
+      "throughput_per_second": 366.3,
+      "mean_us": 10496.4,
+      "p50_us": 4913.6,
+      "p90_us": 19545.5,
+      "p99_us": 97446.5,
+      "max_us": 331017.9,
+      "wall_seconds": 5.459
+    }
+  }
+}

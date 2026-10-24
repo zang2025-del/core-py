@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Environments
+.venv/
+venv/
+.env
+
+# Databases. The service writes one by default; a database is state, not source.
+*.db
+*.db-wal
+*.db-shm
+*.sqlite3
+
+# Test and tooling output
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+_migrate_check*.db
+
+# Editors
+.idea/
+.vscode/
+*.swp
+.DS_Store

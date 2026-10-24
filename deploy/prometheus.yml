@@ -1,0 +1,17 @@
+# Minimal scrape config for the local stack. The point of it being here is that
+# the metrics in observability/metrics.py are only worth having if something
+# actually reads them -- an endpoint nobody scrapes is a comment.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: permgate
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["permgate:8000"]
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

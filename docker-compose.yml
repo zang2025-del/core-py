@@ -1,0 +1,57 @@
+# Local stack: the gateway, plus Prometheus so the metrics endpoint has
+# somewhere to go.
+#
+# PostgreSQL is included but commented out on purpose. The storage layer is not
+# SQLite-specific and the URL switch is one line -- but the test suite only runs
+# against SQLite, so shipping a compose file that quietly defaults to a database
+# nobody has verified would be claiming coverage that does not exist. Uncomment
+# it, run the suite against it, and it becomes a verified path.
+
+services:
+  permgate:
+    build: .
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      PERMGATE_DATABASE_URL: sqlite+pysqlite:////data/permgate.db
+      PERMGATE_LOG_JSON: "true"
+      PERMGATE_LOG_LEVEL: INFO
+      # Off by default. Turning this on in a shared environment hands every
+      # client the ability to skip consent entirely.
+      PERMGATE_ALLOW_BYPASS_MODE: "false"
+      PERMGATE_ALLOW_CLIENT_SUPPLIED_MODE: "false"
+    volumes:
+      - permgate-data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/readyz', timeout=2).status==200 else 1)"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    depends_on:
+      - permgate
+    restart: unless-stopped
+
+  # postgres:
+  #   image: postgres:16-alpine
+  #   environment:
+  #     POSTGRES_PASSWORD: permgate
+  #     POSTGRES_USER: permgate
+  #     POSTGRES_DB: permgate
+  #   volumes:
+  #     - permgate-pg:/var/lib/postgresql/data
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "pg_isready -U permgate"]
+  #     interval: 5s
+  #     retries: 10
+
+volumes:
+  permgate-data:
+  # permgate-pg:

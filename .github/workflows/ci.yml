@@ -1,0 +1,138 @@
+# Every gate in this file is one this project has already failed at least once.
+#
+# - `lint` catches the class of mistake ruff found when a missing import in
+#   `cli.py` made `-p --yes` crash and 278 tests missed it.
+# - `types` catches what ruff cannot. `strict = true` was configured for a while
+#   before anyone ran it; there were 13 errors.
+# - `test` runs the whole suite on three Pythons, because a project that only
+#   ever runs on the version the author has is a project with an untested
+#   install story.
+# - `migrations` is the check that catches the most common schema-change bug:
+#   editing models.py, passing every test against a `create_all` database, and
+#   never generating the migration real deployments run.
+# - `evaluation` is the security regression gate. It re-measures the published
+#   numbers, so a rule change that moves one of them fails the build instead of
+#   quietly invalidating a claim in the README.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  # The rule layer is deterministic and the tests are hermetic, so a failure
+  # here is a real failure rather than a flake.
+  PYTHONUNBUFFERED: "1"
+  PYTHONDONTWRITEBYTECODE: "1"
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv python install 3.12
+      - run: uv venv --python 3.12 .venv
+      - run: uv pip install --python .venv/bin/python -e ".[dev]"
+      - name: ruff
+        run: uv run --no-project ruff check src tests eval tools migrations
+      - name: ruff format (check only)
+        run: uv run --no-project ruff format --check --diff src tests eval tools
+
+  types:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv python install 3.12
+      - run: uv venv --python 3.12 .venv
+      - run: uv pip install --python .venv/bin/python -e ".[dev]"
+      - name: mypy (strict)
+        run: uv run --no-project mypy
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv python install ${{ matrix.python }}
+      - run: uv venv --python ${{ matrix.python }} .venv
+      - run: uv pip install --python .venv/bin/python -e ".[dev]"
+      - name: pytest
+        run: >
+          uv run --no-project pytest tests/
+          --cov=permgate --cov-report=term-missing
+          --cov-fail-under=90
+      - name: upload coverage
+        if: matrix.python == '3.12'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: .coverage
+
+  migrations:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv python install 3.12
+      - run: uv venv --python 3.12 .venv
+      - run: uv pip install --python .venv/bin/python -e ".[dev]"
+      - name: models and migrations agree
+        run: uv run --no-project pytest tests/integration/test_migrations.py -v
+      - name: a fresh database migrates from empty
+        env:
+          PERMGATE_DATABASE_URL: sqlite+pysqlite:///./ci-fresh.db
+        run: |
+          uv run --no-project alembic upgrade head
+          uv run --no-project alembic current
+      - name: the SQL a migration would emit is reviewable
+        env:
+          PERMGATE_DATABASE_URL: sqlite+pysqlite:///./ci-fresh.db
+        run: uv run --no-project alembic upgrade head --sql > /dev/null
+
+  evaluation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv python install 3.12
+      - run: uv venv --python 3.12 .venv
+      - run: uv pip install --python .venv/bin/python -e ".[dev]"
+      - name: security metrics are unchanged
+        run: uv run --no-project pytest tests/unit/test_regression_metrics.py tests/unit/test_conformance.py -v
+      - name: print the current report
+        run: uv run --no-project permgate eval | head -60
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: build the image
+        run: docker build -t permgate:ci .
+      - name: the container migrates and serves
+        run: |
+          docker run -d --name permgate-ci -p 8000:8000 \
+            -e PERMGATE_DATABASE_URL=sqlite+pysqlite:////data/permgate.db \
+            permgate:ci
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8000/readyz; then break; fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:8000/healthz
+          curl -fsS -X POST http://127.0.0.1:8000/v1/decisions \
+            -H 'content-type: application/json' \
+            -d '{"project_root":"/tmp/ci","tool":"bash","arguments":{"command":"ls -la"}}'
+      - name: container logs
+        if: failure()
+        run: docker logs permgate-ci
+      - name: clean up
+        if: always()
+        run: docker rm -f permgate-ci
