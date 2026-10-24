@@ -4,7 +4,7 @@
     "processor": "Intel64 Family 6 Model 186 Stepping 2, GenuineIntel",
     "cpu_count": 16,
     "python": "3.10.6",
-    "executable": "D:\\Projects\\Core-c++\\.venv\\Scripts\\python.exe"
+    "executable": "D:\\Projects\\Core-py\\.venv\\Scripts\\python.exe"
   },
   "results": {
     "engine": {

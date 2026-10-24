@@ -38,9 +38,9 @@ jobs:
       - run: uv venv --python 3.12 .venv
       - run: uv pip install --python .venv/bin/python -e ".[dev]"
       - name: ruff
-        run: uv run --no-project ruff check src tests eval tools migrations
+        run: uv run --no-project ruff check src tests eval tools loadtest migrations
       - name: ruff format (check only)
-        run: uv run --no-project ruff format --check --diff src tests eval tools
+        run: uv run --no-project ruff format --check --diff src tests eval tools loadtest
 
   types:
     runs-on: ubuntu-latest

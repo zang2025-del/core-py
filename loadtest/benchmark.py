@@ -57,7 +57,6 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
 
 ROOT = Path(__file__).resolve().parent.parent
 for extra in (str(ROOT), str(ROOT / "src")):
@@ -99,7 +98,7 @@ class Samples:
         ordered = sorted(self.latencies_us)
         # Nearest-rank: no interpolation, so every reported figure is a latency
         # that actually occurred rather than an average of two that did.
-        index = min(len(ordered) - 1, max(0, int(round(fraction * len(ordered))) - 1))
+        index = min(len(ordered) - 1, max(0, round(fraction * len(ordered)) - 1))
         return ordered[index]
 
     def summary(self) -> dict[str, float]:
@@ -139,7 +138,9 @@ def bench_engine(iterations: int) -> Samples:
 # ----------------------------------------------------------------- service
 
 
-def _build_container(tmp_path: Path, *, cache_enabled: bool, audit_enabled: bool = True, tag: str = "bench"):
+def _build_container(
+    tmp_path: Path, *, cache_enabled: bool, audit_enabled: bool = True, tag: str = "bench"
+):
     from permgate.api.deps import build_container, create_schema
     from permgate.config import Settings
 
@@ -184,7 +185,9 @@ def bench_service(
         # the project row. Including it would report the cost of starting, not
         # the cost of deciding.
         for command in COMMANDS:
-            container.decisions.evaluate(project_root=project, tool="bash", arguments={"command": command})
+            container.decisions.evaluate(
+                project_root=project, tool="bash", arguments={"command": command}
+            )
 
         started = time.perf_counter()
         for index in range(iterations):
@@ -228,7 +231,7 @@ def bench_service_threads(iterations: int, tmp_path: Path, *, threads: int) -> S
                     project_root=project, tool="bash", arguments={"command": command}
                 )
                 collected[slot].append((time.perf_counter() - begin) * 1_000_000)
-        except BaseException as exc:  # noqa: BLE001 -- reported, not swallowed
+        except BaseException as exc:
             errors.append(exc)
 
     samples = Samples(f"service-{threads}-threads")
@@ -305,11 +308,15 @@ def bench_http(iterations: int, tmp_path: Path, *, threads: int, host: str, port
                     begin = time.perf_counter()
                     response = client.post(
                         "/v1/decisions",
-                        json={"project_root": project, "tool": "bash", "arguments": {"command": command}},
+                        json={
+                            "project_root": project,
+                            "tool": "bash",
+                            "arguments": {"command": command},
+                        },
                     )
                     response.raise_for_status()
                     collected[slot].append((time.perf_counter() - begin) * 1_000_000)
-        except BaseException as exc:  # noqa: BLE001 -- reported, not swallowed
+        except BaseException as exc:
             errors.append(exc)
 
     samples = Samples(f"http-{threads}-threads")
@@ -357,7 +364,10 @@ def render(samples: list[Samples], facts: dict[str, object]) -> str:
     for key, value in facts.items():
         out.append(f"  {key:<12} {value}")
     out.append("")
-    out.append(f"  {'layer':<24}{'ops':>9}{'ops/s':>10}{'mean':>10}{'p50':>10}{'p90':>10}{'p99':>10}{'max':>11}")
+    out.append(
+        f"  {'layer':<24}{'ops':>9}{'ops/s':>10}{'mean':>10}"
+        f"{'p50':>10}{'p90':>10}{'p99':>10}{'max':>11}"
+    )
     out.append("  " + "-" * (width - 4))
     for sample in samples:
         summary = sample.summary()
