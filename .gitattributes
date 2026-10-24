@@ -1,0 +1,18 @@
+# Line endings: LF in the repository, LF on checkout.
+#
+# Without this file Git falls back to core.autocrlf, which is a per-machine
+# setting -- currently true on this laptop -- so the same commit checks out as
+# CRLF here and LF on the Linux CI runner. Most files are indifferent to that.
+# tests/fixtures/conformance.tsv is not: it is the frozen reference verdict for
+# 119 commands, replayed line by line, and it is evidence only if every reader
+# sees the same bytes. Declaring the rule in the repository makes it a property
+# of the project rather than a property of whoever cloned it.
+* text=auto eol=lf
+
+# Git must not treat these as lines. A "line ending" inside a database file is
+# a byte that happens to equal 0x0A, and rewriting it corrupts the file. None is
+# tracked today; the rules are here so a future `git add -f` cannot damage one
+# quietly.
+*.db binary
+*.sqlite binary
+*.sqlite3 binary
