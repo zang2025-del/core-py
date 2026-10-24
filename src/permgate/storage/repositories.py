@@ -13,7 +13,7 @@ from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from typing import Any, cast
 
-from sqlalchemy import CursorResult, delete, func, select
+from sqlalchemy import CursorResult, delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -227,21 +227,43 @@ class DecisionRepository:
         answer: str,
         actor: str | None,
         granted_key: str | None,
-    ) -> Decision | None:
+    ) -> bool:
         """Attach a human's answer to the decision that raised the prompt.
 
-        Refuses to overwrite an existing answer, so a replayed request cannot
-        silently rewrite what a person decided.
+        Returns whether this call is the one that wrote the answer. ``False``
+        means the row does not exist, or somebody else answered it first -- the
+        caller distinguishes the two, because a missing decision is a 404 and a
+        lost race is a 409.
+
+        **The write decides, not the read.** The obvious version of this method
+        reads the row, checks that ``answer`` is still null, and assigns -- and
+        that version loses simultaneous answers. Two requests both read null,
+        both pass the check, and the second silently overwrites what a person
+        decided. A row lock is the usual fix and it is the wrong one here:
+        SQLAlchemy compiles ``SELECT ... FOR UPDATE`` into nothing at all on
+        SQLite, so the lock would exist in CI and not in the default deployment.
+        A conditional UPDATE has the same meaning on both backends -- the
+        database compares and swaps in one statement, and ``rowcount`` says who
+        won.
         """
-        row = self._session.get(Decision, decision_id)
-        if row is None or row.answer is not None:
-            return None
-        row.answer = answer
-        row.answered_at = datetime.now(timezone.utc)
-        row.answer_actor = actor
-        row.granted_key = granted_key
-        self._session.flush()
-        return row
+        result = cast(
+            "CursorResult[Any]",
+            self._session.execute(
+                update(Decision)
+                .where(Decision.id == decision_id, Decision.answer.is_(None))
+                .values(
+                    answer=answer,
+                    answered_at=datetime.now(timezone.utc),
+                    answer_actor=actor,
+                    granted_key=granted_key,
+                )
+                # The ORM holds no copy of this row worth synchronising, and
+                # asking it to update one it may not have loaded is a source of
+                # surprises rather than of correctness.
+                .execution_options(synchronize_session=False)
+            ),
+        )
+        return bool(result.rowcount)
 
     def recent(
         self,

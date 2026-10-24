@@ -159,15 +159,30 @@ class TestAuditWrites:
             session.commit()
             repo = DecisionRepository(session)
             assert (
-                repo.answer(decision_id="d-2", answer="once", actor="a", granted_key=None)
-                is not None
+                repo.answer(decision_id="d-2", answer="once", actor="a", granted_key=None) is True
             )
+            # The second call reports failure rather than overwriting. This is
+            # the same conditional UPDATE that settles a genuine race; here the
+            # two calls are sequential, which only proves the condition is right,
+            # not that it is atomic. The concurrent proof is in
+            # ``test_concurrent_answers.py``.
             assert (
                 repo.answer(decision_id="d-2", answer="always", actor="b", granted_key="bash")
-                is None
+                is False
             )
             session.commit()
             assert session.get(Decision, "d-2").answer == "once"
+
+    def test_answering_a_decision_that_does_not_exist_reports_false(self, session_factory):
+        """The caller turns this into a 404 rather than a 409, so the two have
+        to be distinguishable from the repository's answer."""
+        with session_factory() as session:
+            assert (
+                DecisionRepository(session).answer(
+                    decision_id="never-existed", answer="once", actor="a", granted_key=None
+                )
+                is False
+            )
 
     def test_the_arguments_digest_ignores_key_order(self):
         """Otherwise the digest would be a transcript of the JSON encoder

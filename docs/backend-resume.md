@@ -32,7 +32,7 @@
 
 ```
 Agent 工具调用权限网关（permgate） | 独立完成 | 2026.10
-FastAPI · SQLAlchemy 2.0 · SQLite/PostgreSQL · Prometheus · Docker · 720 测试 / 覆盖率 94%
+FastAPI · SQLAlchemy 2.0 · SQLite/PostgreSQL · Prometheus · Docker · 723 测试 / 覆盖率 94%
 
 S 背景：AI agent 会执行 shell 命令，而"这条命令危不危险"无法用规则穷举——
         terraform destroy 与 kubectl delete namespace production 是灾难性的，
@@ -68,7 +68,7 @@ R 结果：
     p99 从 3.2ms 涨到 110ms——SQLite 串行化写入。据此把下一轮靶子定为
     审计批量提交，并写明为什么这一版故意不做
   · 完整服务 p50 813µs / p99 3.2ms / 1019 ops/s；纯引擎 28,958 ops/s
-  · 720 个测试 12 秒跑完、覆盖率 94%、`mypy --strict` 与 `ruff` 全绿；
+  · 723 个测试 12 秒跑完、覆盖率 94%、`mypy --strict` 与 `ruff` 全绿；
     其中 **119 条命令 × 4 项输出与原实现逐字对拍**，
     证明这是一次被验证过的移植而不是重写
   · 把已发布的安全指标钉成回归门禁：白名单召回 100% / 误伤 0%，
@@ -84,7 +84,7 @@ Agent 工具调用权限网关 | FastAPI · SQLAlchemy · Prometheus · Docker
   真正瓶颈是审计写入（关掉它 p50 减半、p99 降到 1/3），与直觉相反
 · 授权缓存的一致性：失效放在 commit 之后，撤销立即生效，TTL 只作跨进程兜底；
   幂等写入靠唯一约束 + 冲突重读；审计表 append-only、与授权同事务
-· 720 测试 / 覆盖率 94% / mypy strict 全绿；119 条命令与原实现逐字对拍；
+· 723 测试 / 覆盖率 94% / mypy strict 全绿；119 条命令与原实现逐字对拍；
   安全指标钉成回归门禁，CI 七个 job 强制
 ```
 
@@ -109,7 +109,7 @@ Agent 工具调用权限网关 | FastAPI · SQLAlchemy · Prometheus · Docker
 >
 > 这不是洁癖。它买到三件事：**第一**，规则层能离线评测——我拿 49 条标注命令
 > 加 11 条真实事故命令跑完整分类器，不需要服务器和数据库；**第二**，能穷举测试，
-> 720 个测试 12 秒跑完；**第三**——这条最关键——**性能瓶颈的位置变得显然**。
+> 723 个测试 12 秒跑完；**第三**——这条最关键——**性能瓶颈的位置变得显然**。
 > 因为 `decide()` 是纯的，它唯一可能慢的原因就是它的输入拼装得慢，那我把性能
 > 预算压到授权查询和审计写入上就行了。
 >
@@ -229,7 +229,7 @@ Agent 工具调用权限网关 | FastAPI · SQLAlchemy · Prometheus · Docker
 |---|---|
 | **事务边界** | 一次请求 = 一次事务。决策的审计行和它创建的授权同一事务提交——一次崩溃不能留下没有记录的授权。`session_scope()` 上下文管理器统一出口 |
 | **幂等** | 授权写入靠 `UNIQUE(project_id, tool, scope)` + 冲突后重读，重放返回同一行而不是报错或重复。回答接口二次调用返回 **409**，因为重写一个人的决定是审计表绝不能允许的 |
-| **并发** | SQLAlchemy 连接池；SQLite 开 WAL + busy_timeout（把 "database is locked" 从异常变成等待）；`check_same_thread=False` 只在"一个连接同一时刻只属于一个线程"的前提下成立 |
+| **并发** | 回答的原子性靠条件 UPDATE（`WHERE answer IS NULL` + `rowcount` 判胜负），不靠行锁——行锁在 SQLite 上被编译掉，只在 PG 生效，是个只存在于 CI 的保证。并发回答在两种后端上都测过。SQLAlchemy 连接池；SQLite 开 WAL + busy_timeout（把 "database is locked" 从异常变成等待）；`check_same_thread=False` 只在"一个连接同一时刻只属于一个线程"的前提下成立 |
 | **缓存一致性** | 失效在 **commit 之后**；每次写都失效（包括没匹配到的撤销——调用方以为有东西在）；TTL 只作跨进程兜底；缓存可关闭。**多进程下的可见性延迟上界 = TTL，这是明示的缺口** |
 | **索引** | `projects.root` 唯一索引；`grants(project_id, tool, scope)` 唯一约束 + `(project_id, tool)` 查询索引；`decisions(project_id, occurred_at)` 和 `(verdict, occurred_at)` 支持审计查询 |
 | **为什么 scope 用空串不用 NULL** | SQLite / PostgreSQL / MySQL **都把 UNIQUE 索引里的 NULL 当作互不相同**，可空 scope 会让最常见的 tool 级授权重复插入，唯一约束形同虚设 |
@@ -255,6 +255,7 @@ Agent 工具调用权限网关 | FastAPI · SQLAlchemy · Prometheus · Docker
 | 「上了 Redis 缓存」 | 没有。缓存是进程内的，多进程一致性是明示的缺口 |
 | 「有沙箱隔离」 | **没有。** 白名单不隔离进程，`make` 照样能跑任意 recipe |
 | 「支持 PostgreSQL」 | 现在这句话有证据了：CI 的 `postgres` job 把整套测试跑在 postgres:16 上。但**没有生产负载验证**——并发写入的排队只在 SQLite 上量过，别把"测试跑过"说成"压测过" |
+| 「并发安全」 | 回答路径的原子性有证据（条件 UPDATE，两种后端都测，且测试在旧实现上会失败）。但**只有这一条路径**被这么证明过——授权写入靠唯一约束，其余写入路径的并发行为没有同等强度的测试 |
 | 把 33% 叫「误伤率」 | 那是打扰率，全部问在会不可逆丢东西的命令上，问得对。误伤率是 0% |
 
 **正确姿态**：主动、清楚地说明哪些是移植的、哪些是新写的、哪些没做。

@@ -29,7 +29,7 @@ FastAPI、structlog 或 `os`。
 
 ### 1.2 规则层能被穷举测试
 
-720 个测试 12 秒跑完，覆盖率 94%。规则矩阵、六个决策分支、`grant_for_answer` 的不对称——
+723 个测试 12 秒跑完，覆盖率 94%。规则矩阵、六个决策分支、`grant_for_answer` 的不对称——
 每个分支一个测试，而不是被一个大的场景测试顺便覆盖。
 
 ### 1.3 性能瓶颈的位置变得显然
@@ -146,6 +146,44 @@ except IntegrityError:
 
 **代价**：授权写入的失败会连带回滚审计行，所以「回答成功」和「审计已落库」
 必须是同一件事——这是对的，但意味着回答接口不能对审计失败做降级。
+
+### 4.4 回答的原子性靠条件 UPDATE，不靠行锁
+
+回答一个弹框时，「这个决定有没有被回答过」的检查**不能由读来裁决**：
+
+```python
+row = session.get(Decision, decision_id)
+if row.answer is not None:          # ← 两个并发请求都会读到这里是 None
+    raise AlreadyAnswered(...)
+row.answer = answer                 # ← 后写的那个静默覆盖前一个
+```
+
+两个请求同时到达，都读到「未回答」，都通过检查，第二个人的答案覆盖第一个人的。
+审计表里留下一条**看起来正常、实际被改写过的**记录——这正是它最不能有的状态。
+
+**修法不是行锁。** 直觉方案是 `SELECT ... FOR UPDATE`，但 SQLAlchemy 把这条
+子句编译到 SQLite 时**直接丢掉**，渲染出的 SQL 里没有 `FOR UPDATE`（实测，
+见 `tests/integration/test_concurrent_answers.py` 的模块文档）。也就是说行锁会
+在 CI 的 PostgreSQL 上生效，而在**默认部署**的 SQLite 上不存在——一个只在测试
+环境成立的保证，比没有保证更危险，因为它会让人以为已经安全了。
+
+真正跨后端成立的是条件 UPDATE，由数据库在一次语句里完成比较与交换：
+
+```python
+UPDATE decisions SET answer = :answer, ...
+WHERE id = :id AND answer IS NULL      # ← 胜负在这里决出
+```
+
+`rowcount` 就是判据：1 表示这次调用是写下答案的那一次，0 表示行不存在或已被
+别人抢先。调用方据此区分 **404**（不存在）与 **409**（竞态失败）。
+
+**代价**：这条 UPDATE 绕过了 ORM 的身份映射（`synchronize_session=False`），
+所以同一事务里如果还持有该行的对象副本，它是过期的。这里没有——读到的 `row`
+只用来取 `project_id`、`tool`、`rule` 等不变字段，写完全交给这条语句。
+
+**失败方不留痕迹**：`always` 会创建一条授权，而授权写入在条件 UPDATE **之前**。
+所以失败方抛异常时，外层 `except` 回滚整个事务，那条授权一起消失。否则会出现
+「回答被拒了，但授权还在」——一个只有并发时才出现的提权。
 
 ---
 
@@ -307,7 +345,7 @@ class AllowlistPolicy:
 | **威胁模型是「agent 跑偏」** | 不是「仓库本身恶意」。后者要 seccomp / sandbox-exec 那个量级 |
 | **多进程撤销有可见性延迟** | 上界 = TTL（默认 15s） |
 | **不做语义判断** | 读的是词法。变量展开后才变成 `rm -rf /*` 的命令，规则层在展开前无从判断 |
-| **PostgreSQL 只在 CI 与单机上跑过** | 整套测试跑在 postgres:16 上（CI 的 `postgres` job，本地用 `TEST_DATABASE_URL` 指向任意 PG）。但**并发写入的排队行为只在 SQLite 上量过**——§6 的 p99 数字来自单机 SQLite，PG 上的写者排队没有测量 |
+| **PostgreSQL 只在 CI 与单机上跑过** | 整套测试跑在 postgres:16 上（CI 的 `postgres` job，本地用 `TEST_DATABASE_URL` 指向任意 PG）。并发**正确性**两种后端都测过（§4.4 的条件 UPDATE，`test_concurrent_answers.py` 在后端切换后仍具判别力）。但**并发写入的排队行为只在 SQLite 上量过**——§6 的 p99 数字来自单机 SQLite，PG 上的写者排队没有测量。**「测过正确性」和「压测过」是两件事** |
 
 ---
 

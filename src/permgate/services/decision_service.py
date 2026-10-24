@@ -249,12 +249,21 @@ class DecisionService:
                     )
                     granted_key = grant.key
 
-            decisions.answer(
+            # The conditional UPDATE is the only atomic step in this method, so
+            # it is also the only thing that can be trusted to pick a winner.
+            # The read at the top gives the two distinct rejections -- 404 for a
+            # decision that never existed, 409 for one already answered -- but it
+            # cannot be the gate: two requests both read "unanswered" before
+            # either writes. Raising here rolls the grant back too, so a loser
+            # leaves no trace of having tried.
+            won = decisions.answer(
                 decision_id=decision_id,
                 answer=answer,
                 actor=actor,
                 granted_key=granted_key,
             )
+            if not won:
+                raise AlreadyAnswered(f"decision {decision_id} was answered by another request")
             project_id = row.project_id
             session.commit()
         except Exception:
