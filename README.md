@@ -59,21 +59,30 @@ AI agent 会执行 shell 命令。市场上所有 agent 产品的权限层都栽
 
 ## 2. 快速开始
 
+需要 Python 3.10+ 和 [`uv`](https://docs.astral.sh/uv/)——没装的话，macOS/Linux 用
+`curl -LsSf https://astral.sh/uv/install.sh | sh`，Windows 用
+`powershell -c "irm https://astral.sh/uv/install.ps1 | iex"`。
+
 ```bash
 uv venv --python 3.10 .venv
-uv pip install --python .venv/Scripts/python.exe -e ".[dev]"
+uv pip install -e ".[dev]"
 
 # 分类一条命令。不连数据库、不起服务
 uv run permgate classify "rm -rf ./build"
 
 # 建一个调用方凭证。服务默认要求身份认证，没有客户端它不会启动，
 # 所以这是起服务之前的一步。token 只打印这一次，库里只存它的摘要。
-uv run permgate client create --name me --root /home/dev/checkout-api
+uv run permgate client create --name me --root /home/dev/checkout-api  # 换成你自己的目录
 
 # 起服务
 uv run permgate serve
 # 打开 http://127.0.0.1:8000/docs
 ```
+
+`uv pip install` 没有写 `--python`：`uv` 自己会发现当前目录的 `.venv`，并认得两种
+布局（Windows 的 `.venv/Scripts/`、macOS/Linux 的 `.venv/bin/`），所以这条命令在三个
+平台上都能照抄。写死其中一个平台的路径，另一处的读者第一条命令就会失败——这条
+README 原来写的正是 `.venv/Scripts/python.exe`。
 
 ```bash
 # 问一次裁决。所有业务端点都要带 bearer token
@@ -436,10 +445,10 @@ downgrade 往返）/ `evaluation`（重测已发布的安全数字，并核对�
 把 `TEST_DATABASE_URL` 指向任意 PostgreSQL，整套测试就改在它上面跑：
 
 ```bash
-uv pip install --python .venv/Scripts/python.exe -e ".[dev,postgres]"
+uv pip install -e ".[dev,postgres]"
 docker run -d -p 5432:5432 -e POSTGRES_PASSWORD=postgres postgres:16
 TEST_DATABASE_URL='postgresql+psycopg://postgres:postgres@127.0.0.1:5432/postgres' \
-  pytest tests/
+  uv run pytest tests/
 ```
 
 每个测试拿到自己的 schema（不是自己的库），跑完整个 session 后统一清理，
