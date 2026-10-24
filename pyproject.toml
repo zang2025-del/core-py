@@ -26,6 +26,13 @@ postgres = ["psycopg[binary]>=3.1"]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
+    # The CI `test` and `postgres` jobs run pytest with `--cov` and
+    # `--cov-fail-under=90`. Those flags are provided by this plugin, and
+    # without it pytest does not skip the coverage step -- it exits 4 with
+    # "unrecognized arguments", so both jobs failed before running a test.
+    # It went unnoticed because the local virtualenv had it installed while
+    # the dependency list did not.
+    "pytest-cov>=5.0",
     "httpx>=0.27",
     "ruff>=0.5",
     "mypy>=1.10",

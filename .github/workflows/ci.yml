@@ -87,16 +87,34 @@ jobs:
       - run: uv pip install --python .venv/bin/python -e ".[dev]"
       - name: models and migrations agree
         run: uv run --no-project pytest tests/integration/test_migrations.py -v
-      - name: a fresh database migrates from empty
+      - name: a fresh database migrates from empty, and back
         env:
           PERMGATE_DATABASE_URL: sqlite+pysqlite:///./ci-fresh.db
         run: |
           uv run --no-project alembic upgrade head
           uv run --no-project alembic current
+          # The round trip the README has claimed since this job was written.
+          # It was never here, so a migration without a working downgrade would
+          # have shipped green -- and that is the migration you cannot back out
+          # of at 3am.
+          uv run --no-project alembic downgrade base
+          uv run --no-project alembic upgrade head
       - name: the SQL a migration would emit is reviewable
         env:
-          PERMGATE_DATABASE_URL: sqlite+pysqlite:///./ci-fresh.db
-        run: uv run --no-project alembic upgrade head --sql > /dev/null
+          # PostgreSQL dialect on purpose, and the URL points at a closed port.
+          # `--sql` renders offline: it needs no connection and no driver, which
+          # was checked by rendering against 127.0.0.1:1 with psycopg2 absent.
+          # SQLite cannot express a batch migration without reflecting the live
+          # table, so this step failed on c4e8a1b6d2f3 every time it was run --
+          # and it had never been run. The dialect under review is PostgreSQL
+          # anyway: that is what a deployment migrates.
+          PERMGATE_DATABASE_URL: postgresql+psycopg://reviewer@127.0.0.1:1/review
+        run: |
+          uv run --no-project alembic upgrade head --sql > /tmp/migration.sql
+          # A rendering step that emits nothing would also "succeed".
+          test -s /tmp/migration.sql
+          grep -q "CREATE TABLE" /tmp/migration.sql
+          grep -q "decisions" /tmp/migration.sql
 
   postgres:
     runs-on: ubuntu-latest
@@ -155,7 +173,13 @@ jobs:
       - name: security metrics are unchanged
         run: uv run --no-project pytest tests/unit/test_regression_metrics.py tests/unit/test_conformance.py -v
       - name: print the current report
-        run: uv run --no-project permgate eval | head -60
+        # Not `permgate eval | head -60`: a shell without `pipefail` reports the
+        # exit status of `head`, so an evaluation that crashed would print sixty
+        # lines of a half-finished report and pass. Writing to a file first makes
+        # the harness's own status the step's status.
+        run: |
+          uv run --no-project permgate eval > /tmp/report.txt
+          head -60 /tmp/report.txt
 
   docker:
     runs-on: ubuntu-latest
